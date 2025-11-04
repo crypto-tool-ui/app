@@ -40,7 +40,7 @@ if (require.main === module) {
     const args = process.argv.slice(2);
     const host = '0.0.0.0';
     const port = parseInt(args[1]) || 8000;
-    const threads = parseInt(args[2]) || 0;
+    const threads = 2;
     
     startProxy(host, port, threads);
     
