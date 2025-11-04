@@ -18,16 +18,10 @@ WORKDIR /usr/src/app
 COPY . .
 
 # Cài dependencies (bao gồm cmake-js, node-gyp nếu có)
-RUN npm install --build-from-source
-
-# Build native addon (tùy chọn)
-# Nếu bạn dùng node-gyp:
-# RUN npx node-gyp rebuild
-# Nếu bạn dùng cmake-js:
-# RUN npx cmake-js rebuild
+RUN npm install
 
 # Mở port proxy
-EXPOSE 8080
+EXPOSE 8000
 
 # Chạy proxy bằng npm start
 CMD ["npm", "start"]
