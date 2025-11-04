@@ -17,16 +17,11 @@ COPY . .
 
 # Build addon using node-gyp or cmake-js
 # Uncomment the one that applies to your setup
-RUN if [ -f binding.gyp ]; then \
-      npx node-gyp rebuild; \
-    elif [ -f CMakeLists.txt ]; then \
-      npx cmake-js build; \
-    else \
-      echo "No build config found (binding.gyp or CMakeLists.txt)" && exit 1; \
-    fi
+RUN npm install
 
 # Runtime stage
 FROM node:20-slim
+
 WORKDIR /usr/src/app
 
 # Copy built addon and JS files from builder
@@ -36,4 +31,4 @@ COPY --from=build /usr/src/app .
 EXPOSE 8080
 
 # Default command runs Node script that starts the proxy
-CMD ["node", "-e", "const proxy=require('./build/Release/ws_tcp_proxy.node'); proxy.start('0.0.0.0',8080,4); setInterval(()=>{},1e6);"]
+CMD ["node", "index.js"]
