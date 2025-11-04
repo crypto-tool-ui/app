@@ -1,34 +1,33 @@
-FROM node:20-bullseye as build
+# Sử dụng Node 20 có đầy đủ Debian libs
+FROM node:20-bookworm
 
-# Install build dependencies
+# Cài công cụ build & Boost
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libboost-all-dev \
-    cmake \
     python3 \
+    cmake \
     git \
+    pkg-config \
+    libboost-all-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Set work directory
+# Thư mục làm việc
 WORKDIR /usr/src/app
 
-# Copy source
+# Sao chép file package
 COPY . .
 
-# Build addon using node-gyp or cmake-js
-# Uncomment the one that applies to your setup
-RUN npm install
+# Cài dependencies (bao gồm cmake-js, node-gyp nếu có)
+RUN npm install --build-from-source
 
-# Runtime stage
-FROM node:20-slim
+# Build native addon (tùy chọn)
+# Nếu bạn dùng node-gyp:
+# RUN npx node-gyp rebuild
+# Nếu bạn dùng cmake-js:
+# RUN npx cmake-js rebuild
 
-WORKDIR /usr/src/app
-
-# Copy built addon and JS files from builder
-COPY --from=build /usr/src/app .
-
-# Expose WebSocket proxy port
+# Mở port proxy
 EXPOSE 8080
 
-# Default command runs Node script that starts the proxy
-CMD ["node", "index.js"]
+# Chạy proxy bằng npm start
+CMD ["npm", "start"]
