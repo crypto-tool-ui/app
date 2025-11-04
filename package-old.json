@@ -13,7 +13,6 @@
     "native",
     "addon"
   ],
-  "gypfile": true,
   "dependencies": {
     "nan": "^2.17.0"
   },
