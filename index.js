@@ -1,4 +1,4 @@
-const proxy = require('./ws_tcp_proxy');
+const proxy = require('./build/Release/ws_tcp_proxy.node');
 
 // Helper to encode TCP address to base64
 function encodeTcpAddress(host, port) {
