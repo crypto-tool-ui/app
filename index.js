@@ -1,4 +1,4 @@
-const proxy = require('./build/Release/ws_tcp_proxy');
+const proxy = require('./ws_tcp_proxy');
 
 // Helper to encode TCP address to base64
 function encodeTcpAddress(host, port) {
@@ -11,9 +11,6 @@ function startProxy(host = '0.0.0.0', port = 8080, threads = 0) {
         proxy.start(host, port, threads);
         console.log(`WebSocket proxy started on ${host}:${port}`);
         console.log(`Threads: ${threads || 'auto-scaled'}`);
-        console.log('\nUsage:');
-        console.log('  Connect WebSocket to: ws://<host>:<port>/<base64_tcp_address>');
-        console.log('  Example: ws://localhost:8080/' + encodeTcpAddress('example.com', 80));
     } catch (err) {
         console.error('Failed to start proxy:', err.message);
         process.exit(1);
@@ -53,7 +50,7 @@ if (require.main === module) {
             console.error('Proxy stopped unexpectedly');
             process.exit(1);
         }
-    }, 5000);
+    }, 30000);
 }
 
 // Export for use as module
