@@ -11,6 +11,7 @@
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
+namespace http = beast::http;
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
@@ -56,31 +57,28 @@ class ProxySession : public std::enable_shared_from_this<ProxySession> {
     std::vector<char> tcp_buffer_;
     std::atomic<bool> closed_{false};
     
-    static constexpr size_t BUFFER_SIZE = 4096; // Giảm từ 8192 để tiết kiệm RAM
+    static constexpr size_t BUFFER_SIZE = 4096;
 
 public:
     ProxySession(tcp::socket socket, net::io_context& ioc)
         : ws_(std::move(socket))
         , tcp_socket_(ioc)
         , tcp_buffer_(BUFFER_SIZE) {
-        // Tối ưu buffer limits
         ws_buffer_.max_size(BUFFER_SIZE * 2);
     }
 
     void run(const std::string& target) {
-        // Tối ưu timeout cho high concurrency
         ws_.set_option(websocket::stream_base::timeout{
-            std::chrono::seconds(30),    // handshake timeout
-            std::chrono::seconds(300),   // idle timeout (5 phút)
-            false                         // keep alive pings
+            std::chrono::seconds(30),
+            std::chrono::seconds(300),
+            false
         });
         
         ws_.set_option(websocket::stream_base::decorator([](websocket::response_type& res) {
             res.set(beast::http::field::server, "ws-tcp-proxy");
         }));
         
-        // Giảm buffer size cho WebSocket frame
-        ws_.read_message_max(BUFFER_SIZE * 4); // Max 16KB message
+        ws_.read_message_max(BUFFER_SIZE * 4);
 
         auto self = shared_from_this();
         ws_.async_accept(
@@ -172,7 +170,7 @@ private:
     }
 };
 
-// Listener accepts WebSocket connections
+// Listener accepts WebSocket and HTTP connections
 class Listener : public std::enable_shared_from_this<Listener> {
     net::io_context& ioc_;
     tcp::acceptor acceptor_;
@@ -182,11 +180,8 @@ public:
         : ioc_(ioc), acceptor_(ioc) {
         acceptor_.open(endpoint.protocol());
         acceptor_.set_option(net::socket_base::reuse_address(true));
-        
-        // Tối ưu cho high concurrency
         acceptor_.set_option(tcp::acceptor::reuse_address(true));
-        acceptor_.set_option(tcp::no_delay(true)); // Disable Nagle
-        
+        acceptor_.set_option(tcp::no_delay(true));
         acceptor_.bind(endpoint);
         acceptor_.listen(net::socket_base::max_listen_connections);
     }
@@ -207,23 +202,38 @@ private:
     }
 
     void handle_connection(tcp::socket socket) {
-        // Read HTTP request to extract target from path
         auto stream = std::make_shared<beast::tcp_stream>(std::move(socket));
         auto buffer = std::make_shared<beast::flat_buffer>();
-        auto req = std::make_shared<beast::http::request<beast::http::string_body>>();
+        auto req = std::make_shared<http::request<http::string_body>>();
         
-        beast::http::async_read(*stream, *buffer, *req,
+        http::async_read(*stream, *buffer, *req,
             [this, stream, buffer, req](beast::error_code ec, std::size_t) {
                 if (ec) return;
-                
-                std::string target = std::string(req->target());
-                if (target.size() > 1 && target[0] == '/') {
-                    target = target.substr(1);
+
+                // Nếu request là WebSocket upgrade -> tạo session WS
+                if (websocket::is_upgrade(*req)) {
+                    std::string target = std::string(req->target());
+                    if (target.size() > 1 && target[0] == '/') {
+                        target = target.substr(1);
+                    }
+                    auto session = std::make_shared<ProxySession>(
+                        stream->release_socket(), ioc_);
+                    session->run(target);
+                } else {
+                    // Nếu chỉ là HTTP request (ví dụ healthcheck)
+                    http::response<http::string_body> res{
+                        http::status::ok, req->version()};
+                    res.set(http::field::server, "ws-tcp-proxy");
+                    res.set(http::field::content_type, "text/plain");
+                    res.keep_alive(req->keep_alive());
+                    res.body() = "ok";
+                    res.prepare_payload();
+
+                    http::async_write(*stream, res,
+                        [stream](beast::error_code, std::size_t) {
+                            stream->socket().shutdown(tcp::socket::shutdown_send);
+                        });
                 }
-                
-                auto session = std::make_shared<ProxySession>(
-                    stream->release_socket(), ioc_);
-                session->run(target);
             });
     }
 };
@@ -244,7 +254,6 @@ public:
             threads = std::max(2u, boost::thread::hardware_concurrency());
         }
 
-        // Create io_context pool
         for (int i = 0; i < threads; ++i) {
             auto ioc = std::make_shared<net::io_context>();
             auto work = std::make_shared<net::io_context::work>(*ioc);
@@ -252,7 +261,6 @@ public:
             work_guards_.push_back(work);
         }
 
-        // Start listener on first io_context
         beast::error_code ec;
         auto addr = net::ip::make_address(host, ec);
         if (ec) {
@@ -264,7 +272,6 @@ public:
         listener_ = std::make_shared<Listener>(*io_contexts_[0], endpoint);
         listener_->run();
 
-        // Start thread pool
         for (auto& ioc : io_contexts_) {
             thread_pool_.create_thread([ioc]() {
                 ioc->run();
