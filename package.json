@@ -1,0 +1,26 @@
+{
+  "name": "ws-tcp-proxy",
+  "version": "1.0.0",
+  "description": "High-performance WebSocket to TCP proxy server",
+  "main": "index.js",
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp rebuild",
+    "clean": "node-gyp clean",
+    "start" "node index.js"
+  },
+  "keywords": [
+    "websocket",
+    "proxy",
+    "tcp",
+    "native",
+    "addon"
+  ],
+  "gypfile": true,
+  "dependencies": {
+    "nan": "^2.17.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^9.0.0"
+  }
+}
