@@ -6,16 +6,7 @@ import { App } from "uWebSockets.js";
 const numCPUs = 2;
 const WS_PORT = process.env.PORT || 8000;
 
-if (cluster.isPrimary) {
-  console.log(`Master ${process.pid} running`);
-  for (let i = 0; i < numCPUs; i++) cluster.fork();
-
-  cluster.on("exit", (worker) => {
-    console.log(`Worker ${worker.process.pid} crashed, restarting...`);
-    cluster.fork();
-  });
-} else {
-  const app = App();
+ const app = App();
 
   // Healthcheck route
   app.get("/", (res) => res.writeStatus("200 OK").end("ok"));
@@ -75,4 +66,3 @@ if (cluster.isPrimary) {
       console.error(`❌ Worker ${process.pid} failed to listen`);
     }
   });
-}
