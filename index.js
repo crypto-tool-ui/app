@@ -1,5 +1,3 @@
-import cluster from "cluster";
-import { cpus } from "os";
 import net from "net";
 import { App } from "uWebSockets.js";
 
