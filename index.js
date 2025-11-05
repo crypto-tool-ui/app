@@ -1,62 +1,78 @@
-const proxy = require('./build/Release/ws_tcp_proxy.node');
+import cluster from "cluster";
+import { cpus } from "os";
+import net from "net";
+import { App } from "uWebSockets.js";
 
-// Helper to encode TCP address to base64
-function encodeTcpAddress(host, port) {
-    return Buffer.from(`${host}:${port}`).toString('base64');
-}
+const numCPUs = 2;
+const WS_PORT = process.env.PORT || 8000;
 
-// Start proxy server
-function startProxy(host = '0.0.0.0', port = 8080, threads = 0) {
-    try {
-        proxy.start(host, port, threads);
-        console.log(`WebSocket proxy started on ${host}:${port}`);
-        console.log(`Threads: ${threads || 'auto-scaled'}`);
-    } catch (err) {
-        console.error('Failed to start proxy:', err.message);
-        process.exit(1);
+if (cluster.isPrimary) {
+  console.log(`Master ${process.pid} running`);
+  for (let i = 0; i < numCPUs; i++) cluster.fork();
+
+  cluster.on("exit", (worker) => {
+    console.log(`Worker ${worker.process.pid} crashed, restarting...`);
+    cluster.fork();
+  });
+} else {
+  const app = App();
+
+  // Healthcheck route
+  app.get("/", (res) => res.writeStatus("200 OK").end("ok"));
+
+  // WebSocket route: /<base64(host:port)>
+  app.ws("/*", {
+    compression: 0,
+    maxPayloadLength: 16 * 1024 * 1024,
+    idleTimeout: 60,
+
+    open: (ws, req) => {
+      try {
+        const path = req.getUrl().slice(1); // remove "/"
+        const decoded = Buffer.from(path, "base64").toString("utf8");
+        const [host, port] = decoded.split(":");
+        console.log(`[${process.pid}] WS connect → TCP ${host}:${port}`);
+
+        const socket = net.createConnection({ host, port: parseInt(port, 10) });
+        ws.tcp = socket;
+
+        // TCP → WS
+        socket.on("data", (chunk) => {
+          if (ws) ws.send(chunk, true);
+        });
+
+        socket.on("close", () => {
+          try { ws.end(1000, "TCP closed"); } catch {}
+        });
+
+        socket.on("error", (err) => {
+          console.error("TCP error:", err.message);
+          try { ws.end(1011, err.message); } catch {}
+        });
+      } catch (err) {
+        console.error("Open error:", err);
+        ws.end(1011, "Invalid address");
+      }
+    },
+
+    message: (ws, message, isBinary) => {
+      if (ws.tcp && !ws.tcp.destroyed) {
+        ws.tcp.write(Buffer.from(message));
+      }
+    },
+
+    close: (ws, code, message) => {
+      if (ws.tcp && !ws.tcp.destroyed) ws.tcp.destroy();
+      console.log(`[${process.pid}] WS closed (${code})`);
+    },
+  });
+
+  // Start server
+  app.listen(WS_PORT, (token) => {
+    if (token) {
+      console.log(`✅ Worker ${process.pid} listening on ${WS_PORT}`);
+    } else {
+      console.error(`❌ Worker ${process.pid} failed to listen`);
     }
+  });
 }
-
-// Stop proxy server
-function stopProxy() {
-    proxy.stop();
-    console.log('Proxy stopped');
-}
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log('\nShutting down...');
-    stopProxy();
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    stopProxy();
-    process.exit(0);
-});
-
-// Example usage
-if (require.main === module) {
-    const args = process.argv.slice(2);
-    const host = '0.0.0.0';
-    const port = parseInt(args[1]) || 8000;
-    const threads = 2;
-    
-    startProxy(host, port, threads);
-    
-    // Keep process alive
-    setInterval(() => {
-        if (!proxy.isRunning()) {
-            console.error('Proxy stopped unexpectedly');
-            process.exit(1);
-        }
-    }, 30000);
-}
-
-// Export for use as module
-module.exports = {
-    start: startProxy,
-    stop: stopProxy,
-    isRunning: () => proxy.isRunning(),
-    encodeTcpAddress
-};
