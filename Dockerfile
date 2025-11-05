@@ -1,5 +1,5 @@
 # Sử dụng Node 20 có đầy đủ Debian libs
-FROM node:20-bookworm
+FROM node:20
 
 # Cài công cụ build & Boost
 RUN apt-get update && apt-get install -y \
@@ -8,7 +8,6 @@ RUN apt-get update && apt-get install -y \
     cmake \
     git \
     pkg-config \
-    libboost-all-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Thư mục làm việc
