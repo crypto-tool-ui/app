@@ -1,50 +1,115 @@
-import { App } from "uWebSockets.js";
+import uWS from "uWebSockets.js";
 import net from "net";
+import cluster from "cluster";
 
 const PORT = 8000;
+const NUM_CPU = 2
 
-const app = App();
-
-app.get("/", (res) => {
-  res.writeStatus("200 OK").end("ok");
-});
-
-app.ws("/*", {
-  compression: 0,
-  maxPayloadLength: 16 * 1024 * 1024,
-  idleTimeout: 60,
-
-  open: (ws, req) => {
-    try {
-      const path = req.getUrl().slice(1);
-      const decoded = Buffer.from(path, "base64").toString("utf8");
-      const [host, port] = decoded.split(":");
-      console.log(`New WS → TCP ${host}:${port}`);
-
-      const socket = net.createConnection({ host, port: parseInt(port, 10) });
-      ws.tcp = socket;
-
-      socket.on("data", (chunk) => ws.send(chunk, true));
-      socket.on("close", () => ws.end(1000, "TCP closed"));
-      socket.on("error", (err) => {
-        console.error("TCP error:", err.message);
-        ws.end(1011, err.message);
-      });
-    } catch {
-      ws.end(1011, "Invalid address");
+if (cluster.isPrimary) {
+	let online = 0;
+	
+    for (let index = 0; index < NUM_CPU; index++) {
+        cluster.fork({
+            isWorker: true
+        })
     }
-  },
 
-  message: (ws, message, isBinary) => {
-    if (ws.tcp && !ws.tcp.destroyed) ws.tcp.write(Buffer.from(message));
-  },
+	cluster.on('message', (w, msg) => {
+		const { status } = msg;
+		if (status) {
+			online++;
+			console.log(`🚀 WS⇄TCP -> ${online} online!`);
+		} else {
+			online--;
+			console.log(`🚀 WS⇄TCP -> ${online} online!`);
+		}
+	})
+} else {
+    const app = uWS.App();
 
-  close: (ws) => {
-    if (ws.tcp && !ws.tcp.destroyed) ws.tcp.destroy();
-  },
-});
+    // HTTP healthcheck
+    app.get("/", (res) => res.end("ok"));
 
-app.listen(PORT, "0.0.0.0", (token) => {
-  if (token) console.log(`✅ Listening on ${PORT}`);
-  else console.error(`❌ Failed to listen on ${PORT}`);
-});
+    // WebSocket <-> TCP proxy
+    app.ws("/*", {
+        compression: 1,
+        maxPayloadLength: 16 * 1024 * 1024,
+        idleTimeout: 120,
+        upgrade: (res, req, context) => {
+            const encoded = req.getUrl().slice(1);
+            res.upgrade({
+                    encoded
+                },
+                req.getHeader("sec-websocket-key"),
+                req.getHeader("sec-websocket-protocol"),
+                req.getHeader("sec-websocket-extensions"),
+                context
+            );
+        },
+
+        open: (ws) => {
+            const decoded = Buffer.from(ws.encoded, "base64").toString("utf8");
+            const [host, portStr] = decoded.split(":");
+            const port = parseInt(portStr, 10);
+
+            if (!host || !port) {
+                ws.end(1011, "Invalid address");
+                return;
+            }
+
+            // custom state
+            const tcp = net.createConnection({
+                host,
+                port
+            });
+            ws.isConnected = false;
+            ws.queue = [];
+            ws.tcp = tcp;
+
+            tcp.on("connect", () => {
+                ws.isConnected = true;
+	            console.log(`🟢 SUCCESS: WS <-> TCP ${host}:${port}`);
+                ws.queue.forEach(msg => tcp.write(msg.toString()));
+                ws.queue.length = 0;
+
+				process.send({ status: true });
+            });
+
+            tcp.on("data", (data) => {
+                try {
+                    ws.send(data.toString());
+                } catch (err) {
+                    console.error("WS send failed:", err.message);
+                }
+            });
+
+            tcp.on("close", () => {
+                if (ws.isOpen) ws.end(1000, "TCP closed");
+            });
+
+            tcp.on("error", (err) => {
+                console.error(`TCP error: ${err.message}`);
+                if (ws.isOpen) ws.end(1011, err.message);
+            });
+        },
+
+        message: (ws, msg) => {
+            const data = Buffer.from(msg);
+            if (ws.isConnected) {
+                ws.tcp.write(data.toString());
+            } else {
+                ws.queue.push(data.toString());
+            }
+        },
+
+        close: (ws) => {
+            if (ws.tcp && !ws.tcp.destroyed) ws.tcp.destroy();
+			process.send({ status: false });
+        },
+    });
+
+    app.listen("0.0.0.0", PORT, (t) => {
+        if (t) console.log(`🚀 WS⇄TCP proxy running on port ${PORT}`);
+        else console.error("❌ Failed to listen");
+    });
+}
