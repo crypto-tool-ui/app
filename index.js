@@ -44,7 +44,7 @@ app.ws("/*", {
   },
 });
 
-app.listen(PORT, (token) => {
+app.listen(PORT, "0.0.0.0", (token) => {
   if (token) console.log(`✅ Listening on ${PORT}`);
   else console.error(`❌ Failed to listen on ${PORT}`);
 });
