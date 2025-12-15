@@ -14,8 +14,8 @@ if (cluster.isPrimary) {
         })
     }
 
-	cluster.on('message', (w, msg) => {
-		const { status, msg } = msg;
+	cluster.on('message', (w, message) => {
+		const { status, msg } = message;
 		if (status) {
 			online++;
 		} else {
