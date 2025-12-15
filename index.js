@@ -21,7 +21,7 @@ if (cluster.isPrimary) {
 		} else {
 			online--;
 		}
-        console.log(msg + ` ${online} Workers!`);
+        console.log(msg + ` <-> WORKERS [${online}]`);
 	})
 } else {
     const app = uWS.App();
