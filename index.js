@@ -61,9 +61,9 @@ app.ws("/*", {
             while (ws.messageQueue.length > 0) {
                 const bufferedMsg = ws.messageQueue.shift();
                 try {
-                    const msg = Buffer.from(bufferedMsg).data.toString();
+                    const msg = bufferedMsg.toString();
                     console.log(`[WS] Message from ${clientIp} -> ${msg}`);
-                    tcpClient.write(data.toString() + '\n');
+                    tcpClient.write(msg + '\n');
                 } catch (err) {
                     console.error(`[WS] Error sending queued message:`, err);
                 }
@@ -102,8 +102,9 @@ app.ws("/*", {
             
             // Kiểm tra xem TCP đã sẵn sàng chưa
             if (ws.tcpReady && ws.tcpClient && !ws.tcpClient.destroyed) {
-                // Gửi trực tiếp
-                ws.tcpClient.write(buffer);
+                const msg = bufferedMsg.toString();
+                console.log(`[WS] Message from ${clientIp} -> ${msg}`);
+                ws.tcpClient.write(msg + '\n');
             } else {
                 // Lưu vào queue nếu TCP chưa sẵn sàng
                 ws.messageQueue.push(buffer);
