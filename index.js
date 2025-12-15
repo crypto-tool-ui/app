@@ -69,7 +69,7 @@ if (cluster.isPrimary) {
             tcp.on("connect", () => {
                 ws.isConnected = true;
 	            console.log(`🟢 SUCCESS: WS <-> TCP ${host}:${port}`);
-                ws.queue.forEach(msg => tcp.write(msg.toString()));
+                ws.queue.forEach(msg => tcp.write(msg.toString() + '\n'));
                 ws.queue.length = 0;
 
 				process.send({ status: true });
@@ -77,7 +77,7 @@ if (cluster.isPrimary) {
 
             tcp.on("data", (data) => {
                 try {
-                    ws.send(data.toString());
+                    ws.send(data.toString() + '\n');
                 } catch (err) {
                     console.error("WS send failed:", err.message);
                 }
@@ -95,6 +95,8 @@ if (cluster.isPrimary) {
 
         message: (ws, msg) => {
             const data = Buffer.from(msg);
+			console.log(data.toString());
+		
             if (ws.isConnected) {
                 ws.tcp.write(data.toString());
             } else {
