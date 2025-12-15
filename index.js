@@ -57,16 +57,17 @@ app.ws("/*", {
         // TCP → WS
         tcpClient.on('data', (data) => {
             if (ws.isOpen) {
-               ws.send(data.toString("utf8"), false);
+               const msg = data.toString().trim();
+               ws.send(msg);
             }
         });
 
         tcpClient.on('close', () => {
-            if (ws.readyState === uWS.OPEN) ws.end(1000, "TCP closed");
+            if (ws.isOpen) ws.end(1000, "TCP closed");
         });
 
         tcpClient.on('error', () => {
-            if (ws.readyState === uWS.OPEN) ws.end(1011, "TCP error");
+            if (ws.isOpen) ws.end(1011, "TCP error");
         });
 
         tcpClient.setTimeout(300000, () => {
