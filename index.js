@@ -85,7 +85,7 @@ app.ws("/*", {
     close: (ws) => {
         const clientIp = ws.ip;
         connections--;
-        console.log(`[WS] Disconnected from ${clientIp} -> ${host}:${port}  [${connections} workers]`);
+        console.log(`[WS] Disconnected from ${clientIp} [${connections} workers]`);
         if (ws.tcpClient && !ws.tcpClient.destroyed) {
             ws.tcpClient.destroy();
         }
