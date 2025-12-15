@@ -61,7 +61,9 @@ app.ws("/*", {
             while (ws.messageQueue.length > 0) {
                 const bufferedMsg = ws.messageQueue.shift();
                 try {
-                    tcpClient.write(bufferedMsg);
+                    const msg = Buffer.from(bufferedMsg).data.toString();
+                    console.log(`[WS] Message from ${clientIp} -> ${msg}`);
+                    tcpClient.write(data.toString() + '\n');
                 } catch (err) {
                     console.error(`[WS] Error sending queued message:`, err);
                 }
@@ -72,6 +74,7 @@ app.ws("/*", {
         tcpClient.on('data', (data) => {
             if (ws.isOpen) {
                 const msg = data.toString().trim();
+                console.log(`[WS] Message from ${clientIp} -> ${msg}`);
                 ws.send(msg);
             }
         });
