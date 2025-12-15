@@ -15,14 +15,13 @@ if (cluster.isPrimary) {
     }
 
 	cluster.on('message', (w, msg) => {
-		const { status } = msg;
+		const { status, msg } = msg;
 		if (status) {
 			online++;
-			console.log(`🚀 WS⇄TCP -> ${online} online!`);
 		} else {
 			online--;
-			console.log(`🚀 WS⇄TCP -> ${online} online!`);
 		}
+        console.log(msg + ` ${online} Workers!`);
 	})
 } else {
     const app = uWS.App();
@@ -32,13 +31,14 @@ if (cluster.isPrimary) {
 
     // WebSocket <-> TCP proxy
     app.ws("/*", {
-        compression: 1,
+        compression: 0,
         maxPayloadLength: 16 * 1024 * 1024,
         idleTimeout: 300,
         upgrade: (res, req, context) => {
-            const encoded = req.getUrl().slice(1);
-            res.upgrade({
-                    encoded
+            res.upgrade(
+                {
+                    encoded: req.getUrl().slice(1),
+                    ip: Buffer.from(res.getRemoteAddressAsText()).toString()
                 },
                 req.getHeader("sec-websocket-key"),
                 req.getHeader("sec-websocket-protocol"),
@@ -49,6 +49,7 @@ if (cluster.isPrimary) {
 
         open: (ws) => {
             const decoded = Buffer.from(ws.encoded, "base64").toString("utf8");
+            const clientIp = ws.ip;
             const [host, portStr] = decoded.split(":");
             const port = parseInt(portStr, 10);
 
@@ -68,19 +69,15 @@ if (cluster.isPrimary) {
 
             tcp.on("connect", () => {
                 ws.isConnected = true;
-	            console.log(`🟢 SUCCESS: WS <-> TCP ${host}:${port}`);
-                ws.queue.forEach(msg => {
-					console.log("MINER: " + data.toString());
-					tcp.write(msg.toString() + '\n')
-				});
+
+                ws.queue.forEach(msg => tcp.write(msg.toString() + '\n'));
                 ws.queue.length = 0;
 
-				process.send({ status: true });
+				process.send({ status: true, msg: `🟢 SUCCESS: WS [${clientIp}] <-> TCP [${host}:${port}]` });
             });
 
             tcp.on("data", (data) => {
                 try {
-					console.log("POOL: " + data.toString());
                     ws.send(data.toString());
                 } catch (err) {
                     console.error("WS send failed:", err.message);
@@ -99,7 +96,6 @@ if (cluster.isPrimary) {
 
         message: (ws, msg) => {
             const data = Buffer.from(msg);
-			console.log("MINER: " + data.toString());
             if (ws.isConnected) {
                 ws.tcp.write(data.toString() + "\n");
             } else {
@@ -108,8 +104,9 @@ if (cluster.isPrimary) {
         },
 
         close: (ws) => {
+            const clientIp = ws.ip;
             if (ws.tcp && !ws.tcp.destroyed) ws.tcp.destroy();
-			process.send({ status: false });
+			process.send({ status: false, msg: `🔴 DISCONNECTED: WS [${clientIp}]` });
         },
     });
 
