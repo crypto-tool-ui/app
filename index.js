@@ -103,7 +103,6 @@ app.ws("/*", {
             // Kiểm tra xem TCP đã sẵn sàng chưa
             if (ws.tcpReady && ws.tcpClient && !ws.tcpClient.destroyed) {
                 const msg = buffer.toString();
-                console.log(`[WS] Message from ${clientIp} -> ${msg}`);
                 ws.tcpClient.write(msg + '\n');
             } else {
                 // Lưu vào queue nếu TCP chưa sẵn sàng
