@@ -78,7 +78,6 @@ app.ws("/*", {
         // WS → TCP
         try {
             ws.tcpClient?.write(Buffer.from(message));
-            ws.tcpClient?.write('\n');
         } catch { }
     },
 
