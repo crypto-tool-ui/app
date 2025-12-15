@@ -28,13 +28,26 @@ uWS.App()
   maxPayloadLength: 100 * 1024,       // 100KB
   idleTimeout: 300,                   // seconds
   sendPingsAutomatically: false,
-
+  
+  upgrade(res, req, context) {
+    res.upgrade(
+      {
+        url: req.getUrl(),
+        ip: Buffer.from(res.getRemoteAddressAsText()).toString()
+      },
+      req.getHeader('sec-websocket-key'),
+      req.getHeader('sec-websocket-protocol'),
+      req.getHeader('sec-websocket-extensions'),
+      context
+    );
+  },
+  
   open(ws) {
-    const req = ws.getUserData().req;
-    const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
+    const { url, ip } = ws.getUserData();
+    const clientIp = ip;
 
     // ---- decode base64 target ----
-    const path = req.getUrl().slice(1);
+    const path = url.slice(1);
     if (!path) {
       ws.send(JSON.stringify({ error: 'Missing base64 target in URL' }));
       ws.close();
