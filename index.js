@@ -56,8 +56,8 @@ app.ws("/*", {
 
         // TCP → WS
         tcpClient.on('data', (data) => {
-            if (!ws.closed) {
-                ws.send(data, true, false); // binary passthrough
+            if (ws.isOpen) {
+                ws.send(data, true); // binary passthrough
             }
         });
 
