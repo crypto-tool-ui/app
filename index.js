@@ -1,140 +1,115 @@
 import uWS from "uWebSockets.js";
 import net from "net";
+import cluster from "cluster";
 
 const PORT = 8000;
-const app = uWS.App();
-let connections = 0;
+const NUM_CPU = 2
 
-// HTTP healthcheck
-app.get("/", (res) => {
-    res.writeHeader('Content-Type', 'text/plain');
-    res.end('WELCOME TO MCP-CLIENT-NODE PUBLIC! FEEL FREE TO USE!\n');
-});
+if (cluster.isPrimary) {
+	let online = 0;
+	
+    for (let index = 0; index < NUM_CPU; index++) {
+        cluster.fork({
+            isWorker: true
+        })
+    }
 
-// WebSocket <-> TCP proxy
-app.ws("/*", {
-    compression: uWS.DISABLED,
-    maxPayloadLength: 200 * 1024,
-    idleTimeout: 300,
-    sendPingsAutomatically: false,
-    
-    upgrade: (res, req, context) => {
-        res.upgrade(
-            {
-                encoded: req.getUrl().slice(1),
-                ip: Buffer.from(res.getRemoteAddressAsText()).toString()
-            },
-            req.getHeader("sec-websocket-key"),
-            req.getHeader("sec-websocket-protocol"),
-            req.getHeader("sec-websocket-extensions"),
-            context
-        );
-    },
-    
-    open: (ws) => {
-        const decoded = Buffer.from(ws.encoded, "base64").toString("utf8");
-        const clientIp = ws.ip;
-        const [host, portStr] = decoded.split(":");
-        const port = parseInt(portStr, 10);
-        
-        if (!host || !port) {
-            ws.end(1011, "Invalid address");
-            return;
-        }
+	cluster.on('message', (w, msg) => {
+		const { status } = msg;
+		if (status) {
+			online++;
+			console.log(`🚀 WS⇄TCP -> ${online} online!`);
+		} else {
+			online--;
+			console.log(`🚀 WS⇄TCP -> ${online} online!`);
+		}
+	})
+} else {
+    const app = uWS.App();
 
-        // Thêm flag và queue để quản lý trạng thái
-        ws.tcpReady = false;
-        ws.messageQueue = [];
-        
-        // TCP socket
-        const tcpClient = new net.Socket();
-        ws.tcpClient = tcpClient;
-        
-        tcpClient.connect(Number(port), host, () => {
-            connections++;
-            console.log(`[WS] Connected from ${clientIp} -> ${host}:${port} [${connections} workers]`);
-            
-            // Đánh dấu TCP đã sẵn sàng
-            ws.tcpReady = true;
-            
-            // Gửi tất cả message trong queue
-            while (ws.messageQueue.length > 0) {
-                const bufferedMsg = ws.messageQueue.shift();
+    // HTTP healthcheck
+    app.get("/", (res) => res.end("ok"));
+
+    // WebSocket <-> TCP proxy
+    app.ws("/*", {
+        compression: 1,
+        maxPayloadLength: 16 * 1024 * 1024,
+        idleTimeout: 300,
+        upgrade: (res, req, context) => {
+            const encoded = req.getUrl().slice(1);
+            res.upgrade({
+                    encoded
+                },
+                req.getHeader("sec-websocket-key"),
+                req.getHeader("sec-websocket-protocol"),
+                req.getHeader("sec-websocket-extensions"),
+                context
+            );
+        },
+
+        open: (ws) => {
+            const decoded = Buffer.from(ws.encoded, "base64").toString("utf8");
+            const [host, portStr] = decoded.split(":");
+            const port = parseInt(portStr, 10);
+
+            if (!host || !port) {
+                ws.end(1011, "Invalid address");
+                return;
+            }
+
+            // custom state
+            const tcp = net.createConnection({
+                host,
+                port
+            });
+            ws.isConnected = false;
+            ws.queue = [];
+            ws.tcp = tcp;
+
+            tcp.on("connect", () => {
+                ws.isConnected = true;
+	            console.log(`🟢 SUCCESS: WS <-> TCP ${host}:${port}`);
+                ws.queue.forEach(msg => tcp.write(msg.toString()));
+                ws.queue.length = 0;
+
+				process.send({ status: true });
+            });
+
+            tcp.on("data", (data) => {
                 try {
-                    const msg = bufferedMsg.toString();
-                    console.log(`[WS] Message from ${clientIp} -> ${msg}`);
-                    tcpClient.write(msg + '\n');
+                    ws.send(data.toString());
                 } catch (err) {
-                    console.error(`[WS] Error sending queued message:`, err);
+                    console.error("WS send failed:", err.message);
                 }
-            }
-        });
-        
-        // TCP → WS
-        tcpClient.on('data', (data) => {
-            if (ws.isOpen) {
-                const msg = data.toString().trim();
-                console.log(`[WS] Message from ${clientIp} -> ${msg}`);
-                ws.send(msg);
-            }
-        });
-        
-        tcpClient.on('close', () => {
-            ws.tcpReady = false;
-            if (ws.isOpen) ws.end(1000, "TCP closed");
-        });
-        
-        tcpClient.on('error', (err) => {
-            ws.tcpReady = false;
-            console.error(`[TCP] Error:`, err);
-            if (ws.isOpen) ws.end(1011, "TCP error");
-        });
-        
-        tcpClient.setTimeout(300000, () => {
-            tcpClient.end();
-        });
-    },
-    
-    message(ws, message, isBinary) {
-        // WS → TCP
-        try {
-            const buffer = Buffer.from(message);
-            
-            // Kiểm tra xem TCP đã sẵn sàng chưa
-            if (ws.tcpReady && ws.tcpClient && !ws.tcpClient.destroyed) {
-                const msg = buffer.toString();
-                ws.tcpClient.write(msg + '\n');
-            } else {
-                // Lưu vào queue nếu TCP chưa sẵn sàng
-                ws.messageQueue.push(buffer);
-                
-                // Optional: Giới hạn kích thước queue để tránh memory leak
-                if (ws.messageQueue.length > 100) {
-                    console.warn(`[WS] Message queue overflow, dropping oldest message`);
-                    ws.messageQueue.shift();
-                }
-            }
-        } catch (err) {
-            console.error(`[WS] Error handling message:`, err);
-        }
-    },
-    
-    close: (ws) => {
-        const clientIp = ws.ip;
-        connections--;
-        console.log(`[WS] Disconnected from ${clientIp} [${connections} workers]`);
-        
-        // Cleanup
-        ws.tcpReady = false;
-        ws.messageQueue = [];
-        
-        if (ws.tcpClient && !ws.tcpClient.destroyed) {
-            ws.tcpClient.destroy();
-        }
-    },
-});
+            });
 
-app.listen("0.0.0.0", PORT, (t) => {
-    if (t) console.log(`🚀 WS⇄TCP proxy running on port ${PORT}`);
-    else console.error("❌ Failed to listen");
-});
+            tcp.on("close", () => {
+                if (ws.isOpen) ws.end(1000, "TCP closed");
+            });
+
+            tcp.on("error", (err) => {
+                console.error(`TCP error: ${err.message}`);
+                if (ws.isOpen) ws.end(1011, err.message);
+            });
+        },
+
+        message: (ws, msg) => {
+            const data = Buffer.from(msg);
+            if (ws.isConnected) {
+                ws.tcp.write(data.toString());
+            } else {
+                ws.queue.push(data.toString());
+            }
+        },
+
+        close: (ws) => {
+            if (ws.tcp && !ws.tcp.destroyed) ws.tcp.destroy();
+			process.send({ status: false });
+        },
+    });
+
+    app.listen("0.0.0.0", PORT, (t) => {
+        if (t) console.log(`🚀 WS⇄TCP proxy running on port ${PORT}`);
+        else console.error("❌ Failed to listen");
+    });
+}
