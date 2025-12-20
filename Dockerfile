@@ -23,4 +23,4 @@ RUN npm install
 EXPOSE 8000
 
 # Chạy proxy bằng npm start
-CMD ["npm", "start"]
+CMD ["npm", "prod"]
