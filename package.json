@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "prod": "node app.js",
+    "prod": "node app.js"
   },
   "keywords": [
     "websocket",
