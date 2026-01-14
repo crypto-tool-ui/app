@@ -10,7 +10,7 @@ services:
       - "80:80"       # WebSocket traffic
       - "8404:8404"   # HAProxy stats
     volumes:
-      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy:/usr/local/etc/haproxy:ro
     networks:
       - mining-network
     depends_on:
