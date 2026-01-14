@@ -52,7 +52,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags='-s -w -extldflags "-static"' \
     -gcflags="all=-l -B" \
     -trimpath \
-    -o mining-proxy main.go
+    -o app main.go
 
 # Stage 2: Runtime stage (minimal)
 FROM scratch
@@ -64,7 +64,7 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Copy binary from builder
-COPY --from=builder /build/mining-proxy /mining-proxy
+COPY --from=builder /build/app /app
 
 # Expose port
 EXPOSE 8000
@@ -73,4 +73,4 @@ EXPOSE 8000
 USER 65534:65534
 
 # Set entrypoint
-ENTRYPOINT ["/mining-proxy"]
+ENTRYPOINT ["/app"]
