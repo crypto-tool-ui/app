@@ -50,10 +50,7 @@ services:
           cpus: '0.5'
           memory: 512M
     logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      driver: "none"  # Disable file logging
 
   # Mining Proxy Node 2
   proxy2:
@@ -78,10 +75,7 @@ services:
           cpus: '0.5'
           memory: 512M
     logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      driver: "none"  # Disable file logging
 
   # Mining Proxy Node 3
   proxy3:
@@ -106,10 +100,7 @@ services:
           cpus: '0.5'
           memory: 512M
     logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      driver: "none"  # Disable file logging
 
   # Mining Proxy Node 4
   proxy4:
@@ -134,10 +125,7 @@ services:
           cpus: '0.5'
           memory: 512M
     logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      driver: "none"  # Disable file logging
 
 networks:
   mining-network:
