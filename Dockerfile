@@ -25,36 +25,52 @@
 # # Chạy proxy bằng npm start
 # CMD ["npm", "start"]
 
-# ---------- Build stage ----------
-FROM golang:1.22-alpine AS builder
+# Multi-stage build for optimal size and security
 
-WORKDIR /app
+# Stage 1: Build stage
+FROM golang:1.21-alpine AS builder
 
-# Cài cert để websocket wss / https nếu cần
-RUN apk add --no-cache ca-certificates
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates tzdata
 
-# Copy mod trước để cache deps
+# Set working directory
+WORKDIR /build
+
+# Copy go mod files
 COPY go.mod go.sum ./
+
+# Download dependencies
 RUN go mod download
 
-# Copy source
-COPY . .
+# Copy source code
+COPY main.go ./
 
-# Build binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o app main.go
+# Build with optimizations
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -a \
+    -installsuffix cgo \
+    -ldflags='-s -w -extldflags "-static"' \
+    -gcflags="all=-l -B" \
+    -trimpath \
+    -o mining-proxy main.go
 
-# ---------- Runtime stage ----------
-FROM alpine:latest
+# Stage 2: Runtime stage (minimal)
+FROM scratch
 
-WORKDIR /app
+# Copy timezone data
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
-RUN apk add --no-cache ca-certificates
+# Copy SSL certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-# Copy binary từ builder
-COPY --from=builder /app/app .
+# Copy binary from builder
+COPY --from=builder /build/mining-proxy /mining-proxy
 
-# Expose websocket port
+# Expose port
 EXPOSE 8000
 
-# Run app
-CMD ["./app"]
+# Run as non-root (optional metadata)
+USER 65534:65534
+
+# Set entrypoint
+ENTRYPOINT ["/mining-proxy"]
