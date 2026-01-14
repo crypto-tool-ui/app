@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  # HAProxy Load Balancer
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: mining-haproxy
+    restart: unless-stopped
+    ports:
+      - "80:80"       # WebSocket traffic
+      - "8404:8404"   # HAProxy stats
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - mining-network
+    depends_on:
+      - proxy1
+      - proxy2
+      - proxy3
+      - proxy4
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Mining Proxy Node 1
+  proxy1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mining-proxy:latest
+    container_name: mining-proxy-1
+    restart: unless-stopped
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - MAX_CONNECTIONS=50000
+    networks:
+      - mining-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Mining Proxy Node 2
+  proxy2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mining-proxy:latest
+    container_name: mining-proxy-2
+    restart: unless-stopped
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - MAX_CONNECTIONS=50000
+    networks:
+      - mining-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Mining Proxy Node 3
+  proxy3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mining-proxy:latest
+    container_name: mining-proxy-3
+    restart: unless-stopped
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - MAX_CONNECTIONS=50000
+    networks:
+      - mining-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Mining Proxy Node 4
+  proxy4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mining-proxy:latest
+    container_name: mining-proxy-4
+    restart: unless-stopped
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - MAX_CONNECTIONS=50000
+    networks:
+      - mining-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  mining-network:
+    driver: bridge
