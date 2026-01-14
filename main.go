@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -443,7 +445,28 @@ func (s *ProxyServer) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
 func main() {
+	// Get configuration from environment variables
+	port := getEnv("PORT", "8000")
+	host := getEnv("HOST", "0.0.0.0")
+	maxConns := getEnvInt("MAX_CONNECTIONS", maxConnections)
+	
 	proxy := NewProxyServer()
 
 	mux := http.NewServeMux()
@@ -455,27 +478,29 @@ func main() {
 		status := "healthy"
 		statusCode := http.StatusOK
 		
-		if current >= maxConnections {
+		if current >= int64(maxConns) {
 			status = "at_capacity"
 			statusCode = http.StatusServiceUnavailable
 		}
 		
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
-		fmt.Fprintf(w, `{"status":"%s","connections":%d,"max":%d}`, status, current, maxConnections)
+		fmt.Fprintf(w, `{"status":"%s","connections":%d,"max":%d}`, status, current, maxConns)
 	})
 
+	addr := fmt.Sprintf("%s:%s", host, port)
 	server := &http.Server{
-		Addr:         "0.0.0.0:8000",
+		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	log.Printf("Mining proxy server starting on %s", server.Addr)
-	log.Printf("Max connections: %d", maxConnections)
-	log.Printf("Health check: http://127.0.0.1:8000/health")
+	log.Printf("Mining proxy server starting on %s", addr)
+	log.Printf("Max connections: %d", maxConns)
+	log.Printf("Health check: http://%s:%s/health", host, port)
+	log.Printf("WebSocket: ws://%s:%s/BASE64_ENCODED_ADDRESS", host, port)
 	
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
