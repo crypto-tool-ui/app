@@ -399,7 +399,7 @@ func main() {
 
     log.Printf("Mining proxy server starting on %s", server.Addr)
     log.Printf("Max connections: %d", maxConnections)
-    log.Printf("Health check:  http://127.0.0.0:8080/health")
+    log.Printf("Health check:  http://127.0.0.0:8000/health")
     
     if err := server.ListenAndServe(); err != nil {
         log.Fatal(err)
