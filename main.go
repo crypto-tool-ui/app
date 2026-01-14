@@ -27,7 +27,7 @@ const (
     maxMessageSize = 1024 * 1024
     
     // ✅ NEW: Connection limits
-    maxConnections = 1000
+    maxConnections = 100000
     maxTCPDialTime = 5 * time.Second  // Reduce from 10s
 )
 
