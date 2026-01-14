@@ -125,11 +125,29 @@ stop_all() {
 
 # Clean everything
 clean_all() {
-    log_info "Cleaning up everything..."
-    docker-compose down -v
-    docker rmi mining-proxy:latest || true
-    log_info "Cleanup complete"
+    log_info "Cleaning up mining-proxy stack..."
+
+    # Stop & remove compose stack + orphan containers
+    docker-compose down -v --remove-orphans
+
+    # Remove containers using mining-proxy image
+    docker ps -a --filter "ancestor=mining-proxy:latest" -q | xargs -r docker rm -f
+
+    # Remove mining-proxy image
+    docker rmi mining-proxy:latest 2>/dev/null || true
+
+    # Remove unused networks created by docker-compose
+    docker network prune -f
+
+    # Remove dangling images
+    docker image prune -f
+
+    # Remove unused volumes
+    docker volume prune -f
+
+    log_info "Cleanup complete ✅"
 }
+
 
 # Monitor
 monitor() {
