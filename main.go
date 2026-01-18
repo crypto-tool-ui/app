@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -19,11 +20,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 const (
@@ -48,56 +44,6 @@ const (
 	circuitBreakerTimeout   = 60 * time.Second
 )
 
-// Metrics
-var (
-	activeConnections = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "wsproxy_active_connections",
-		Help: "Number of active WebSocket connections",
-	})
-
-	totalConnections = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "wsproxy_total_connections",
-		Help: "Total number of WebSocket connections",
-	})
-
-	rejectedConnections = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wsproxy_rejected_connections_total",
-		Help: "Total number of rejected connections",
-	}, []string{"reason"})
-
-	connectionDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "wsproxy_connection_duration_seconds",
-		Help:    "Duration of WebSocket connections",
-		Buckets: prometheus.ExponentialBuckets(1, 2, 10),
-	})
-
-	bytesTransferred = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wsproxy_bytes_transferred_total",
-		Help: "Total bytes transferred",
-	}, []string{"direction"})
-
-	tcpDialDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "wsproxy_tcp_dial_duration_seconds",
-		Help:    "Duration of TCP dial operations",
-		Buckets: prometheus.ExponentialBuckets(0.001, 2, 10),
-	})
-
-	tcpDialErrors = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wsproxy_tcp_dial_errors_total",
-		Help: "Total number of TCP dial errors",
-	}, []string{"target"})
-
-	messagesSent = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wsproxy_messages_total",
-		Help: "Total number of messages",
-	}, []string{"direction"})
-
-	errors = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wsproxy_errors_total",
-		Help: "Total number of errors",
-	}, []string{"type"})
-)
-
 // Buffer pool for memory efficiency
 var bufferPool = sync.Pool{
 	New: func() interface{} {
@@ -108,16 +54,14 @@ var bufferPool = sync.Pool{
 
 // Config holds server configuration
 type Config struct {
-	Host               string
-	Port               string
-	MaxConnections     int
-	MaxConnsPerIP      int
-	MaxTCPDialTime     time.Duration
-	ShutdownTimeout    time.Duration
-	EnableCompression  bool
-	EnableMetrics      bool
-	LogLevel           string
-	CleanupGraceTime   time.Duration
+	Host              string
+	Port              string
+	MaxConnections    int
+	MaxConnsPerIP     int
+	MaxTCPDialTime    time.Duration
+	ShutdownTimeout   time.Duration
+	EnableCompression bool
+	CleanupGraceTime  time.Duration
 }
 
 // LoadConfig loads configuration from environment
@@ -130,8 +74,6 @@ func LoadConfig() (*Config, error) {
 		MaxTCPDialTime:    getEnvDuration("MAX_TCP_DIAL_TIME", defaultMaxTCPDialTime),
 		ShutdownTimeout:   getEnvDuration("SHUTDOWN_TIMEOUT", defaultShutdownTimeout),
 		EnableCompression: getEnvBool("ENABLE_COMPRESSION", true),
-		EnableMetrics:     getEnvBool("ENABLE_METRICS", true),
-		LogLevel:          getEnv("LOG_LEVEL", "info"),
 		CleanupGraceTime:  getEnvDuration("CLEANUP_GRACE_TIME", defaultCleanupGraceTime),
 	}
 
@@ -197,11 +139,11 @@ func (l *IPLimiter) Release(ip string) {
 
 // CircuitBreaker prevents cascading failures
 type CircuitBreaker struct {
-	mu           sync.RWMutex
-	failures     map[string]int
-	lastFailure  map[string]time.Time
-	threshold    int
-	timeout      time.Duration
+	mu          sync.RWMutex
+	failures    map[string]int
+	lastFailure map[string]time.Time
+	threshold   int
+	timeout     time.Duration
 }
 
 func NewCircuitBreaker(threshold int, timeout time.Duration) *CircuitBreaker {
@@ -215,22 +157,19 @@ func NewCircuitBreaker(threshold int, timeout time.Duration) *CircuitBreaker {
 
 func (cb *CircuitBreaker) IsOpen(target string) bool {
 	cb.mu.RLock()
-	defer cb.mu.RUnlock()
-
 	failures := cb.failures[target]
 	lastFail := cb.lastFailure[target]
+	cb.mu.RUnlock()
 
 	if failures >= cb.threshold {
 		if time.Since(lastFail) < cb.timeout {
 			return true
 		}
 		// Reset after timeout
-		cb.mu.RUnlock()
 		cb.mu.Lock()
 		delete(cb.failures, target)
 		delete(cb.lastFailure, target)
 		cb.mu.Unlock()
-		cb.mu.RLock()
 	}
 
 	return false
@@ -252,16 +191,15 @@ func (cb *CircuitBreaker) RecordFailure(target string) {
 
 // ProxyServer manages WebSocket connections
 type ProxyServer struct {
-	upgrader        websocket.Upgrader
-	connPool        sync.Map
-	wg              sync.WaitGroup
-	connCounter     int64
-	connSemaphore   chan struct{}
-	ipLimiter       *IPLimiter
-	circuitBreaker  *CircuitBreaker
-	logger          *zap.Logger
-	config          *Config
-	shutdownOnce    sync.Once
+	upgrader       websocket.Upgrader
+	connPool       sync.Map
+	wg             sync.WaitGroup
+	connCounter    int64
+	connSemaphore  chan struct{}
+	ipLimiter      *IPLimiter
+	circuitBreaker *CircuitBreaker
+	config         *Config
+	shutdownOnce   sync.Once
 }
 
 // Connection represents a proxied connection
@@ -279,10 +217,9 @@ type Connection struct {
 	clientIP    string
 	writeMu     sync.Mutex
 	wg          sync.WaitGroup
-	logger      *zap.Logger
 }
 
-func NewProxyServer(cfg *Config, logger *zap.Logger) *ProxyServer {
+func NewProxyServer(cfg *Config) *ProxyServer {
 	return &ProxyServer{
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:    readBufferSize,
@@ -296,7 +233,6 @@ func NewProxyServer(cfg *Config, logger *zap.Logger) *ProxyServer {
 		connSemaphore:  make(chan struct{}, cfg.MaxConnections),
 		ipLimiter:      NewIPLimiter(cfg.MaxConnsPerIP),
 		circuitBreaker: NewCircuitBreaker(circuitBreakerThreshold, circuitBreakerTimeout),
-		logger:         logger,
 		config:         cfg,
 	}
 }
@@ -305,11 +241,7 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Panic recovery
 	defer func() {
 		if rec := recover(); rec != nil {
-			s.logger.Error("panic in HandleWebSocket",
-				zap.Any("panic", rec),
-				zap.String("stack", string(debug.Stack())),
-			)
-			errors.Add("panic", 1)
+			log.Printf("PANIC in HandleWebSocket: %v\n%s", rec, debug.Stack())
 		}
 	}()
 
@@ -317,11 +249,8 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Check IP rate limit
 	if !s.ipLimiter.Acquire(clientIP) {
-		rejectedConnections.WithLabelValues("ip_limit").Inc()
 		http.Error(w, "Too many connections from your IP", http.StatusTooManyRequests)
-		s.logger.Warn("rejected connection: IP limit",
-			zap.String("ip", clientIP),
-		)
+		log.Printf("Rejected connection from %s: IP limit reached", clientIP)
 		return
 	}
 
@@ -330,12 +259,9 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	case s.connSemaphore <- struct{}{}:
 	default:
 		s.ipLimiter.Release(clientIP)
-		rejectedConnections.WithLabelValues("capacity").Inc()
 		http.Error(w, "Server at capacity", http.StatusServiceUnavailable)
-		s.logger.Warn("rejected connection: at capacity",
-			zap.Int64("current", atomic.LoadInt64(&s.connCounter)),
-			zap.Int("max", s.config.MaxConnections),
-		)
+		log.Printf("Rejected connection: server at capacity (%d/%d)",
+			atomic.LoadInt64(&s.connCounter), s.config.MaxConnections)
 		return
 	}
 
@@ -343,7 +269,6 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	encodedAddr := r.URL.Path[1:]
 	if encodedAddr == "" {
 		s.releaseResources(clientIP)
-		rejectedConnections.WithLabelValues("missing_address").Inc()
 		http.Error(w, "Missing TCP address", http.StatusBadRequest)
 		return
 	}
@@ -351,7 +276,6 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	tcpAddrBytes, err := base64.URLEncoding.DecodeString(encodedAddr)
 	if err != nil {
 		s.releaseResources(clientIP)
-		rejectedConnections.WithLabelValues("invalid_address").Inc()
 		http.Error(w, "Invalid BASE64 address", http.StatusBadRequest)
 		return
 	}
@@ -361,7 +285,6 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Pre-validate TCP address
 	if _, _, err := net.SplitHostPort(tcpAddr); err != nil {
 		s.releaseResources(clientIP)
-		rejectedConnections.WithLabelValues("invalid_format").Inc()
 		http.Error(w, "Invalid TCP address format", http.StatusBadRequest)
 		return
 	}
@@ -369,11 +292,8 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Check circuit breaker
 	if s.circuitBreaker.IsOpen(tcpAddr) {
 		s.releaseResources(clientIP)
-		rejectedConnections.WithLabelValues("circuit_open").Inc()
 		http.Error(w, "Backend temporarily unavailable", http.StatusServiceUnavailable)
-		s.logger.Warn("circuit breaker open",
-			zap.String("target", tcpAddr),
-		)
+		log.Printf("Circuit breaker open for %s", tcpAddr)
 		return
 	}
 
@@ -381,34 +301,24 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ws, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.releaseResources(clientIP)
-		s.logger.Error("WebSocket upgrade failed",
-			zap.Error(err),
-			zap.String("client", clientIP),
-		)
+		log.Printf("WebSocket upgrade failed: %v", err)
 		return
 	}
 	ws.SetReadLimit(maxMessageSize)
 
 	// Dial TCP with timeout
-	dialStart := time.Now()
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), s.config.MaxTCPDialTime)
 	defer dialCancel()
 
 	var d net.Dialer
 	tcpConn, err := d.DialContext(dialCtx, "tcp", tcpAddr)
-	tcpDialDuration.Observe(time.Since(dialStart).Seconds())
 
 	if err != nil {
 		s.releaseResources(clientIP)
 		s.circuitBreaker.RecordFailure(tcpAddr)
-		tcpDialErrors.WithLabelValues(tcpAddr).Inc()
-		
-		s.logger.Error("TCP dial failed",
-			zap.Error(err),
-			zap.String("target", tcpAddr),
-			zap.String("client", clientIP),
-		)
-		
+
+		log.Printf("TCP dial failed to %s: %v", tcpAddr, err)
+
 		errMsg := map[string]string{
 			"error": fmt.Sprintf("Cannot connect to backend %s", tcpAddr),
 		}
@@ -431,7 +341,7 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Create connection
 	ctx, cancel := context.WithCancel(context.Background())
 	connID := fmt.Sprintf("%p-%d", ws, time.Now().UnixNano())
-	
+
 	conn := &Connection{
 		id:          connID,
 		ws:          ws,
@@ -442,23 +352,14 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		connectedAt: time.Now(),
 		tcpAddr:     tcpAddr,
 		clientIP:    clientIP,
-		logger: s.logger.With(
-			zap.String("conn_id", connID),
-			zap.String("client", clientIP),
-			zap.String("target", tcpAddr),
-		),
 	}
 
 	// Track connection
 	s.connPool.Store(connID, conn)
 	currentCount := atomic.AddInt64(&s.connCounter, 1)
-	activeConnections.Set(float64(currentCount))
-	totalConnections.Inc()
 
-	conn.logger.Info("connection established",
-		zap.Int64("total", currentCount),
-		zap.Int("max", s.config.MaxConnections),
-	)
+	log.Printf("New connection: %s -> %s [%d/%d]",
+		clientIP, tcpAddr, currentCount, s.config.MaxConnections)
 
 	close(conn.ready)
 
@@ -467,20 +368,16 @@ func (s *ProxyServer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer s.wg.Done()
 		defer s.releaseResources(clientIP)
-		
+
 		conn.proxy()
-		
-		duration := time.Since(conn.connectedAt).Seconds()
-		connectionDuration.Observe(duration)
-		
+
+		duration := time.Since(conn.connectedAt)
+
 		s.connPool.Delete(connID)
 		currentCount := atomic.AddInt64(&s.connCounter, -1)
-		activeConnections.Set(float64(currentCount))
-		
-		conn.logger.Info("connection closed",
-			zap.Float64("duration_sec", duration),
-			zap.Int64("total", currentCount),
-		)
+
+		log.Printf("Connection closed: %s -> %s [Duration: %v] [%d/%d]",
+			clientIP, tcpAddr, duration, currentCount, s.config.MaxConnections)
 	}()
 }
 
@@ -521,10 +418,7 @@ func (c *Connection) proxy() {
 func (c *Connection) wsToTCP() {
 	defer func() {
 		if rec := recover(); rec != nil {
-			c.logger.Error("panic in wsToTCP",
-				zap.Any("panic", rec),
-				zap.String("stack", string(debug.Stack())),
-			)
+			log.Printf("PANIC in wsToTCP [%s]: %v", c.id, rec)
 		}
 		c.cancel()
 	}()
@@ -546,8 +440,7 @@ func (c *Connection) wsToTCP() {
 		messageType, message, err := c.ws.ReadMessage()
 		if err != nil {
 			if !isExpectedCloseError(err) {
-				c.logger.Debug("ws read error", zap.Error(err))
-				errors.WithLabelValues("ws_read").Inc()
+				log.Printf("WS read error [%s]: %v", c.id, err)
 			}
 			return
 		}
@@ -555,8 +448,6 @@ func (c *Connection) wsToTCP() {
 		if messageType != websocket.TextMessage {
 			continue
 		}
-
-		messagesSent.WithLabelValues("ws_to_tcp").Inc()
 
 		// Add newline if needed
 		if len(message) > 0 && message[len(message)-1] != '\n' {
@@ -570,26 +461,20 @@ func (c *Connection) wsToTCP() {
 		}
 
 		c.tcp.SetWriteDeadline(time.Now().Add(writeTimeout))
-		n, err := c.tcp.Write(message)
+		_, err = c.tcp.Write(message)
 		if err != nil {
 			if !isBrokenPipe(err) {
-				c.logger.Debug("tcp write error", zap.Error(err))
-				errors.WithLabelValues("tcp_write").Inc()
+				log.Printf("TCP write error [%s]: %v", c.id, err)
 			}
 			return
 		}
-		
-		bytesTransferred.WithLabelValues("ws_to_tcp").Add(float64(n))
 	}
 }
 
 func (c *Connection) tcpToWS() {
 	defer func() {
 		if rec := recover(); rec != nil {
-			c.logger.Error("panic in tcpToWS",
-				zap.Any("panic", rec),
-				zap.String("stack", string(debug.Stack())),
-			)
+			log.Printf("PANIC in tcpToWS [%s]: %v", c.id, rec)
 		}
 		c.cancel()
 	}()
@@ -620,16 +505,12 @@ func (c *Connection) tcpToWS() {
 			}
 
 			if err != io.EOF && !isBrokenPipe(err) {
-				c.logger.Debug("tcp read error", zap.Error(err))
-				errors.WithLabelValues("tcp_read").Inc()
+				log.Printf("TCP read error [%s]: %v", c.id, err)
 			}
 			return
 		}
 
 		if n > 0 {
-			messagesSent.WithLabelValues("tcp_to_ws").Inc()
-			bytesTransferred.WithLabelValues("tcp_to_ws").Add(float64(n))
-
 			select {
 			case <-c.ctx.Done():
 				return
@@ -643,8 +524,7 @@ func (c *Connection) tcpToWS() {
 
 			if err != nil {
 				if !isExpectedCloseError(err) {
-					c.logger.Debug("ws write error", zap.Error(err))
-					errors.WithLabelValues("ws_write").Inc()
+					log.Printf("WS write error [%s]: %v", c.id, err)
 				}
 				return
 			}
@@ -655,9 +535,7 @@ func (c *Connection) tcpToWS() {
 func (c *Connection) keepAlive() {
 	defer func() {
 		if rec := recover(); rec != nil {
-			c.logger.Error("panic in keepAlive",
-				zap.Any("panic", rec),
-			)
+			log.Printf("PANIC in keepAlive [%s]: %v", c.id, rec)
 		}
 	}()
 
@@ -676,7 +554,7 @@ func (c *Connection) keepAlive() {
 
 			if err != nil {
 				if !isBrokenPipe(err) {
-					c.logger.Debug("ping failed", zap.Error(err))
+					log.Printf("Ping failed [%s]: %v", c.id, err)
 				}
 				return
 			}
@@ -705,8 +583,8 @@ func (c *Connection) cleanup() {
 
 	select {
 	case <-done:
-	case <-time.After(c.logger.Core().Enabled(zapcore.DebugLevel) ? 500*time.Millisecond : 200*time.Millisecond):
-		c.logger.Warn("cleanup timeout waiting for goroutines")
+	case <-time.After(500 * time.Millisecond):
+		log.Printf("Cleanup timeout for connection %s", c.id)
 	}
 
 	// Close WebSocket
@@ -726,9 +604,9 @@ func (c *Connection) cleanup() {
 
 func (s *ProxyServer) Shutdown(ctx context.Context) error {
 	var shutdownErr error
-	
+
 	s.shutdownOnce.Do(func() {
-		s.logger.Info("shutting down proxy server")
+		log.Println("Shutting down proxy server...")
 
 		// Close all connections
 		s.connPool.Range(func(key, value interface{}) bool {
@@ -747,9 +625,9 @@ func (s *ProxyServer) Shutdown(ctx context.Context) error {
 
 		select {
 		case <-done:
-			s.logger.Info("all connections closed gracefully")
+			log.Println("All connections closed gracefully")
 		case <-ctx.Done():
-			s.logger.Warn("shutdown timeout, forcing close")
+			log.Println("Shutdown timeout, forcing close")
 			shutdownErr = ctx.Err()
 		}
 	})
@@ -760,7 +638,7 @@ func (s *ProxyServer) Shutdown(ctx context.Context) error {
 // Health check handlers
 func (s *ProxyServer) healthHandler(w http.ResponseWriter, r *http.Request) {
 	current := atomic.LoadInt64(&s.connCounter)
-	
+
 	health := map[string]interface{}{
 		"status":      "healthy",
 		"connections": current,
@@ -775,7 +653,7 @@ func (s *ProxyServer) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *ProxyServer) readinessHandler(w http.ResponseWriter, r *http.Request) {
 	current := atomic.LoadInt64(&s.connCounter)
-	
+
 	if current >= int64(s.config.MaxConnections) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]string{
@@ -862,38 +740,15 @@ func getEnvBool(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
-func initLogger(level string) (*zap.Logger, error) {
-	var zapLevel zapcore.Level
-	if err := zapLevel.UnmarshalText([]byte(level)); err != nil {
-		zapLevel = zapcore.InfoLevel
-	}
-
-	config := zap.NewProductionConfig()
-	config.Level = zap.NewAtomicLevelAt(zapLevel)
-	config.EncoderConfig.TimeKey = "timestamp"
-	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-
-	return config.Build()
-}
-
 func main() {
 	// Load configuration
 	cfg, err := LoadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Configuration error: %v", err)
 	}
-
-	// Initialize logger
-	logger, err := initLogger(cfg.LogLevel)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Logger initialization error: %v\n", err)
-		os.Exit(1)
-	}
-	defer logger.Sync()
 
 	// Create proxy server
-	proxy := NewProxyServer(cfg, logger)
+	proxy := NewProxyServer(cfg)
 
 	// Setup HTTP server
 	mux := http.NewServeMux()
@@ -901,11 +756,6 @@ func main() {
 	mux.HandleFunc("/health", proxy.healthHandler)
 	mux.HandleFunc("/healthz", proxy.livenessHandler)
 	mux.HandleFunc("/ready", proxy.readinessHandler)
-
-	// Metrics endpoint
-	if cfg.EnableMetrics {
-		mux.Handle("/metrics", promhttp.Handler())
-	}
 
 	addr := fmt.Sprintf("%s:%s", cfg.Host, cfg.Port)
 	server := &http.Server{
@@ -922,30 +772,27 @@ func main() {
 
 	// Start server
 	go func() {
-		logger.Info("server starting",
-			zap.String("addr", addr),
-			zap.Int("max_connections", cfg.MaxConnections),
-			zap.Int("max_conns_per_ip", cfg.MaxConnsPerIP),
-			zap.Bool("compression", cfg.EnableCompression),
-			zap.Bool("metrics", cfg.EnableMetrics),
-		)
-
-		logger.Info("endpoints available",
-			zap.String("websocket", fmt.Sprintf("ws://%s/BASE64_ENCODED_ADDRESS", addr)),
-			zap.String("health", fmt.Sprintf("http://%s/health", addr)),
-			zap.String("liveness", fmt.Sprintf("http://%s/healthz", addr)),
-			zap.String("readiness", fmt.Sprintf("http://%s/ready", addr)),
-			zap.String("metrics", fmt.Sprintf("http://%s/metrics", addr)),
-		)
+		log.Printf("Mining proxy server starting on %s", addr)
+		log.Printf("Configuration:")
+		log.Printf("  - Max connections: %d", cfg.MaxConnections)
+		log.Printf("  - Max connections per IP: %d", cfg.MaxConnsPerIP)
+		log.Printf("  - WebSocket compression: %v", cfg.EnableCompression)
+		log.Printf("  - TCP dial timeout: %v", cfg.MaxTCPDialTime)
+		log.Printf("")
+		log.Printf("Endpoints:")
+		log.Printf("  - WebSocket: ws://%s/BASE64_ENCODED_ADDRESS", addr)
+		log.Printf("  - Health: http://%s/health", addr)
+		log.Printf("  - Liveness: http://%s/healthz", addr)
+		log.Printf("  - Readiness: http://%s/ready", addr)
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("server failed", zap.Error(err))
+			log.Fatalf("Server failed: %v", err)
 		}
 	}()
 
 	// Wait for shutdown signal
 	<-sigChan
-	logger.Info("shutdown signal received")
+	log.Println("Shutdown signal received")
 
 	// Graceful shutdown
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
@@ -953,13 +800,13 @@ func main() {
 
 	// Shutdown HTTP server
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("http server shutdown error", zap.Error(err))
+		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
 	// Shutdown proxy connections
 	if err := proxy.Shutdown(shutdownCtx); err != nil {
-		logger.Error("proxy shutdown error", zap.Error(err))
+		log.Printf("Proxy shutdown error: %v", err)
 	}
 
-	logger.Info("server stopped gracefully")
+	log.Println("Server stopped gracefully")
 }
