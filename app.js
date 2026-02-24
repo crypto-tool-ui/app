@@ -1,115 +1,127 @@
-import uWS from "uWebSockets.js";
-import net from "net";
-import cluster from "cluster";
+#!/usr/bin/env node
+/**
+ * WebSocket to TCP Stratum Proxy with DNS Resolution
+ * Dynamic target pool via base64 URL:
+ * ws://IP:PORT/base64(host:port)
+ */
+const WebSocket = require('ws');
+const net = require('net');
+const http = require('http');
+const dns = require('dns').promises;
 
-const PORT = 8000;
-const NUM_CPU = 2
+// Configuration
+const WS_PORT = process.env.PORT || 8080;
 
-if (cluster.isPrimary) {
-	let online = 0;
-	
-    for (let index = 0; index < NUM_CPU; index++) {
-        cluster.fork({
-            isWorker: true
-        })
+// Create HTTP server
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('WELCOME TO MCP-CLIENT-NODE PUBLIC! FEEL FREE TO USE! \n');
+});
+
+// WebSocket server
+const wss = new WebSocket.Server({ 
+    server,
+    perMessageDeflate: false, // Disable compression for performance
+    maxPayload: 100 * 1024, // 100KB max message size
+});
+
+console.log(`[PROXY] WebSocket listening on port: ${WS_PORT}`);
+console.log(`[PROXY] Expected format: ws://IP:PORT/base64(host:port)`);
+console.log(`[PROXY] Ready to accept connections...\n`);
+
+wss.on('connection', async (ws, req) => {
+    const clientIp = req.socket.remoteAddress;
+    
+    // --- Extract and decode target from URL ---
+    const path = req.url?.slice(1); // remove leading "/"
+    if (!path) {
+        console.error(`[ERROR] No path provided from ${clientIp}`);
+        ws.close();
+        return;
     }
-
-	cluster.on('message', (w, message) => {
-		const { status, msg } = message;
-		if (status) {
-			online++;
-		} else {
-			online--;
-		}
-        console.log(msg + ` <-> WORKERS [${online}]`);
-	})
-} else {
-    const app = uWS.App();
-
-    // HTTP healthcheck
-    app.get("/", (res) => res.end("ok"));
-
-    // WebSocket <-> TCP proxy
-    app.ws("/*", {
-        compression: 0,
-        maxPayloadLength: 16 * 1024 * 1024,
-        idleTimeout: 300,
-        upgrade: (res, req, context) => {
-            res.upgrade(
-                {
-                    encoded: req.getUrl().slice(1),
-                    ip: Buffer.from(res.getRemoteAddressAsText()).toString()
-                },
-                req.getHeader("sec-websocket-key"),
-                req.getHeader("sec-websocket-protocol"),
-                req.getHeader("sec-websocket-extensions"),
-                context
-            );
-        },
-
-        open: (ws) => {
-            const decoded = Buffer.from(ws.encoded, "base64").toString("utf8");
-            const clientIp = ws.ip;
-            const [host, portStr] = decoded.split(":");
-            const port = parseInt(portStr, 10);
-
-            if (!host || !port) {
-                ws.end(1011, "Invalid address");
-                return;
-            }
-
-            // custom state
-            const tcp = net.createConnection({
-                host,
-                port
-            });
-            ws.isConnected = false;
-            ws.queue = [];
-            ws.tcp = tcp;
-
-            tcp.on("connect", () => {
-                ws.isConnected = true;
-                ws.queue.forEach(msg => tcp.write(msg.toString()));
-                ws.queue.length = 0;
-				        process.send({ status: true, msg: `🟢 SUCCESS: WS [${clientIp}] <-> TCP [${host}:${port}]` });
-            });
-
-            tcp.on("data", (data) => {
-                try {
-                    ws.send(data.toString());
-                } catch (err) {
-                    console.error("WS send failed:", err.message);
-                }
-            });
-
-            tcp.on("close", () => {
-                if (ws.isOpen) ws.end(1000, "TCP closed");
-            });
-
-            tcp.on("error", (err) => {
-                console.error(`TCP error: ${err.message}`);
-                if (ws.isOpen) ws.end(1011, err.message);
-            });
-        },
-
-        message: (ws, msg) => {
-            const data = Buffer.from(msg);
-            if (ws.isConnected) {
-                ws.tcp.write(data.toString());
-            } else {
-                ws.queue.push(data.toString());
-            }
-        },
-
-        close: (ws) => {
-            const clientIp = ws.ip;
-            if (ws.tcp && !ws.tcp.destroyed) ws.tcp.destroy();
-			      process.send({ status: false, msg: `🔴 DISCONNECTED: WS [${clientIp}]` });
-        },
+    
+    let decoded, host, port;
+    try {
+        decoded = Buffer.from(path, 'base64').toString('utf8');
+        [host, port] = decoded.split(':');
+        if (!host || !port) throw new Error("Invalid target format");
+    } catch (err) {
+        console.error(`[ERROR] Base64 decode failed:`, err.message);
+        ws.close();
+        return;
+    }
+    
+    // console.log(`[DNS] Resolving ${host} for client ${clientIp}...`);
+    
+    // --- DNS Lookup to get IP address | SUTO-00 ---
+    let resolvedIp = host;
+    // try {
+    //     const addresses = await dns.resolve4(host);
+    //     resolvedIp = addresses[0];
+    // } catch (err) {
+    // }
+    
+    console.log(`[WS] Connecting from ${clientIp} -> ${host} (${resolvedIp}):${port}`);
+    
+    // --- TCP connect to resolved IP ---
+    const tcpClient = new net.Socket();
+    tcpClient.connect(port, resolvedIp, () => {
+        console.log(`[TCP] Connected from ${clientIp} -> ${host} (${resolvedIp}):${port}`);
     });
-
-    app.listen("0.0.0.0", PORT, (t) => {
-        if (t) console.log(`🚀 WS⇄TCP proxy running on port ${PORT}`);
-        else console.error("❌ Failed to listen");
+    tcpClient.setNoDelay(true);
+    tcpClient.setKeepAlive(true, 30000);
+    
+    // --- WS → TCP ---
+    ws.on('message', (data) => {
+        try {
+            const msg = data.toString('utf-8');
+            const message = msg.endsWith("\n") ? msg : msg + "\n";
+            tcpClient.write(message);
+        } catch (err) {
+            console.error(`[ERROR] WS→TCP failed:`, err.message);
+        }
     });
-}
+    
+    // --- TCP → WS ---
+    tcpClient.on('data', (data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+            try {
+                const text = data.toString('utf-8');
+                ws.send(text, { binary: false });
+            } catch (err) {
+                console.error(`[ERROR] TCP→WS:`, err.message);
+            }
+        }
+    });
+    
+    // --- Cleanup ---
+    ws.on('close', () => {
+        // console.log(`[WS] Connection closed from ${clientIp}`);
+        tcpClient.end();
+    });
+    
+    ws.on('error', (err) => {
+        // console.error(`[WS ERROR]`, err.message);
+        tcpClient.end();
+    });
+    
+    tcpClient.on('close', () => {
+        console.log(`[TCP] Pool socket closed for ${host} (${resolvedIp}):${port}`);
+        if (ws.readyState === WebSocket.OPEN) ws.close();
+    });
+    
+    tcpClient.on('error', (err) => {
+        console.error(`[TCP ERROR] ${host} (${resolvedIp}):${port}:`, err.message);
+        if (ws.readyState === WebSocket.OPEN) ws.close();
+    });
+    
+    tcpClient.on('timeout', () => {
+        // console.log(`[TCP] Timeout for ${host} (${resolvedIp}):${port}`);
+        tcpClient.end();
+    });
+});
+
+wss.on('error', (err) => console.error(`[WSS ERROR]`, err.message));
+
+// Start server
+server.listen(WS_PORT, () => console.log(`[SERVER] Listening on port ${WS_PORT}`));
