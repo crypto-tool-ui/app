@@ -16,7 +16,7 @@ const crypto = require('crypto');
 const ALLOWED_HOSTS = "qrl.herominers.com,sal.herominers.com,sal.kryptex.network,pool.supportxmr.com,103.188.166.24";
 const ALLOWED_PORTS = "3333,5555,7777,9000,443,80,1166,7028,1167,1230,1231,4567";
 const CONFIG = {
-  WS_PORT: 8000,
+  WS_PORT: parseInt(process.env.PORT || 8000, 10),
 
   // Security
   AUTH_TOKEN: process.env.AUTH_TOKEN || '',               // Bearer token (empty = disabled)
