@@ -2,6 +2,8 @@
 
 set -e
 
+ulimit -n 100000
+
 echo "🚀 Mining Proxy Multi-Node Deployment"
 echo "======================================"
 
