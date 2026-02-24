@@ -5,8 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "prod": "node app.js"
+    "start": "node app.js"
   },
   "keywords": [
     "websocket",
@@ -16,6 +15,6 @@
     "addon"
   ],
   "dependencies": {
-    "uWebSockets.js": "uNetworking/uWebSockets.js#v20.42.0"
+     "ws": "^8.18.3",
   }
 }
