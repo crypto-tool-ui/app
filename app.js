@@ -337,7 +337,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-server.listen(CONFIG.WS_PORT, () => {
+server.listen(CONFIG.WS_PORT, '0.0.0.0', () => {
   log('INFO', 'system', 'Proxy started', {
     port: CONFIG.WS_PORT,
     maxConnections: CONFIG.MAX_CONNECTIONS,
