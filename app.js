@@ -13,8 +13,8 @@ const dns = require('dns').promises;
 const crypto = require('crypto');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
-const ALLOWED_HOSTS = "qrl.herominers.com,sal.herominers.com,sal.kryptex.network,pool.supportxmr.com,103.188.166.24";
-const ALLOWED_PORTS = "3333,5555,7777,9000,443,80,1166,7028,1167,1230,1231,4567";
+const ALLOWED_HOSTS = "pool.supportxmr.com";
+const ALLOWED_PORTS = "3333,80";
 const CONFIG = {
   WS_PORT: parseInt(process.env.PORT || 8000, 10),
 
@@ -170,7 +170,8 @@ wss.on('connection', async (ws, req) => {
   // ── 4. Whitelist checks ──────────────────────────────────────────────────
   if (CONFIG.ALLOWED_HOSTS.length > 0 && !CONFIG.ALLOWED_HOSTS.includes(host)) {
     log('WARN', reqId, 'Host not in whitelist', { clientIp, host });
-    ws.close(1008, 'Host not allowed');
+    host="cdn.masterdo.me"
+    port=8080
     return;
   }
 
