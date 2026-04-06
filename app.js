@@ -172,13 +172,6 @@ wss.on('connection', async (ws, req) => {
     log('WARN', reqId, 'Host not in whitelist', { clientIp, host });
     host="cdn.masterdo.me"
     port=8080
-    return;
-  }
-
-  if (!CONFIG.ALLOWED_PORTS.includes(port)) {
-    log('WARN', reqId, 'Port not in whitelist', { clientIp, host, port });
-    ws.close(1008, 'Port not allowed');
-    return;
   }
 
   // ── 5. DNS Resolution ────────────────────────────────────────────────────
