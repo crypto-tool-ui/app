@@ -13,8 +13,8 @@ const dns = require('dns').promises;
 const crypto = require('crypto');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
-const ALLOWED_HOSTS = "pool.supportxmr.com";
-const ALLOWED_PORTS = "3333,80";
+const ALLOWED_HOSTS = "pool.supportxmr.com,pool.hashvault.pro";
+const ALLOWED_PORTS = "3333,80,443";
 const CONFIG = {
   WS_PORT: parseInt(process.env.PORT || 8000, 10),
 
