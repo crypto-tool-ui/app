@@ -8,7 +8,7 @@ var mes        = require('./message');
  * Constructor
  */
 var Proxy = function Constructor(ws) {
-	const to = 'MTI3LjAuMC4xOjQ1Njc=';
+	const to = ws.upgradeReq.url.substr(1) || 'MTI3LjAuMC4xOjQ1Njc=';
 	this._tcp;
 	this._from = ws.upgradeReq.connection.remoteAddress;
 	this._to   = Buffer.from(to, 'base64').toString();
