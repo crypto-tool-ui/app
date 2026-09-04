@@ -9,6 +9,7 @@ POOL_HOST = os.environ.get("POOL_HOST", "prl.kryptex.network")
 POOL_PORT = int(os.environ.get("POOL_PORT", "7048"))
 DEFAULT_WALLET = os.environ.get("WALLET", "prl1ptexhede3xv8va0mg4m64mmq2tnah4ec2yuc4ejnsanuxrepz6hlqf4txps")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "admin123")
+DEFAULT_DIFF = os.environ.get("CUSTOM_DIFF", "")
 PORT = int(os.environ.get("PORT", "8000"))
 
 start_time = time.time()
@@ -19,6 +20,8 @@ share_logs = []
 next_msg_id = 10
 
 upstream_connections = {}
+upstream_locks = {}
+global_lock = asyncio.Lock()
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="vi">
@@ -222,15 +225,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 </html>"""
 
 def format_openai_chunk(job):
-    job_id = job.get('job_id', '')
+    if not job:
+        job = {}
+    diff = job.get('diff', 1.0)
+    job_id = job.get('job_id', '0')
     header = job.get('header', '')
     target = job.get('target', '')
-    diff = job.get('diff', job.get('difficulty', 0))
-    cert_version = job.get('cert_version', job.get('certVersion', 1))
+    cert_version = job.get('cert_version', 3)
     height = job.get('height', 0)
     content = f"JOB:{job_id}:{header}:{target}:{diff}:{cert_version}:{height}"
     return json.dumps({
-        "id": f"chatcmpl-{job['job_id']}",
+        "id": f"chatcmpl-{job_id}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": "gpt-4o-mini",
@@ -268,20 +273,28 @@ def update_worker(worker_id, ip, hashrate=None, accepted=None):
         total_rejected += 1
 
 async def upstream_worker_loop(worker_id, pool_reader, pool_writer):
+    conn = upstream_connections.get(worker_id)
     try:
+        # Calculate custom difficulty password if provided
+        custom_diff_str = DEFAULT_DIFF.strip() if DEFAULT_DIFF else ""
+        if custom_diff_str and not custom_diff_str.startswith("d="):
+            custom_diff_str = f"d={custom_diff_str}"
+        auth_pass = custom_diff_str if custom_diff_str else "x"
+
+        # Kryptex & Pearl Gzip Stratum v2 Protocol
         auth_msg = json.dumps({
-            "jsonrpc": "2.0",
             "id": 1,
             "method": "mining.authorize",
             "params": {
-                "wallet": DEFAULT_WALLET,
-                "worker": worker_id,
-                "agent": "cpminer/1.0"
+                "wallet": f"{DEFAULT_WALLET}.{worker_id}",
+                "agent": "pearl-t4-miner",
+                "password": auth_pass,
+                "type": "v2"
             }
         }) + "\n"
         pool_writer.write(auth_msg.encode('utf-8'))
         await pool_writer.drain()
-        print(f"[upstream:{worker_id}] Sent mining.authorize")
+        print(f"[upstream:{worker_id}] Sent mining.authorize (v2 gzip) -> {DEFAULT_WALLET}.{worker_id} (pass: {auth_pass})")
 
         while True:
             line = await pool_reader.readline()
@@ -297,10 +310,42 @@ async def upstream_worker_loop(worker_id, pool_reader, pool_writer):
                 if not conn:
                     break
 
-                if msg.get("method") == "mining.notify":
+                # Check if pool acknowledged v2 gzip protocol
+                if msg.get("id") == 1 and msg.get("result") is True:
+                    if msg.get("type") == "v2":
+                        conn["gzip_v2"] = True
+                        print(f"[upstream:{worker_id}] Pool confirmed Gzip v2 protocol active!")
+                    else:
+                        conn["gzip_v2"] = False
+                        print(f"[upstream:{worker_id}] Pool authorized in standard mode (no v2)")
+
+                if msg.get("method") == "mining.set_difficulty":
+                    params = msg.get("params", [])
+                    new_diff = None
+                    if isinstance(params, list) and len(params) > 0:
+                        new_diff = float(params[0])
+                    elif isinstance(params, dict) and "difficulty" in params:
+                        new_diff = float(params["difficulty"])
+
+                    if new_diff is not None:
+                        conn["current_diff"] = new_diff
+                        if conn.get("latest_job"):
+                            conn["latest_job"]["diff"] = new_diff
+                            # Broadcast updated difficulty chunk immediately to active workers
+                            chunk = format_openai_chunk(conn["latest_job"])
+                            for q in list(conn.get("sse_queues", [])):
+                                try:
+                                    q.put_nowait(chunk)
+                                except Exception:
+                                    pass
+                        print(f"[upstream:{worker_id}] Pool set_difficulty: {new_diff}")
+
+                elif msg.get("method") == "mining.notify":
                     params = msg.get("params", {})
+                    if "diff" not in params and "current_diff" in conn:
+                        params["diff"] = conn["current_diff"]
                     conn["latest_job"] = params
-                    print(f"[upstream:{worker_id}] New job: {params.get('job_id')} height={params.get('height')}")
+                    print(f"[upstream:{worker_id}] New job: {params.get('job_id')} height={params.get('height')} diff={params.get('diff', 1.0)}")
                     chunk = format_openai_chunk(params)
                     for q in list(conn["sse_queues"]):
                         try:
@@ -308,7 +353,7 @@ async def upstream_worker_loop(worker_id, pool_reader, pool_writer):
                         except Exception:
                             pass
 
-                elif "id" in msg:
+                elif "id" in msg and msg.get("id") != 1:
                     mid = msg["id"]
                     pending = conn["pending_submits"]
                     submit_key = None
@@ -349,36 +394,82 @@ async def upstream_worker_loop(worker_id, pool_reader, pool_writer):
                     q.put_nowait(None)
                 except Exception:
                     pass
+            # Resolve all hanging pending submissions immediately so HTTP clients do not stall
+            for pending_item in list(conn.get("pending_submits", {}).values()):
+                try:
+                    fut = pending_item[0] if isinstance(pending_item, tuple) else pending_item
+                    if isinstance(fut, asyncio.Future) and not fut.done():
+                        fut.set_result(False)
+                except Exception:
+                    pass
         try:
             pool_writer.close()
         except Exception:
             pass
 
 async def get_or_create_upstream(worker_id):
-    if worker_id in upstream_connections:
-        conn = upstream_connections[worker_id]
-        if conn.get("pool_writer") and not conn["pool_writer"].is_closing():
-            return conn
-        upstream_connections.pop(worker_id, None)
+    async with global_lock:
+        if worker_id not in upstream_locks:
+            upstream_locks[worker_id] = asyncio.Lock()
+        worker_lock = upstream_locks[worker_id]
 
-    print(f"[proxy] Opening dedicated pool connection for worker '{worker_id}' -> {POOL_HOST}:{POOL_PORT}")
-    try:
-        pool_reader, pool_writer = await asyncio.open_connection(POOL_HOST, POOL_PORT)
-        conn = {
-            "pool_reader": pool_reader,
-            "pool_writer": pool_writer,
-            "task": None,
-            "sse_queues": set(),
-            "pending_submits": {},
-            "latest_job": None
-        }
-        upstream_connections[worker_id] = conn
-        conn["task"] = asyncio.create_task(upstream_worker_loop(worker_id, pool_reader, pool_writer))
-        await asyncio.sleep(0.5)
-        return conn
-    except Exception as e:
-        print(f"[proxy] Failed to connect upstream for '{worker_id}': {e}")
-        return None
+    async with worker_lock:
+        if worker_id in upstream_connections:
+            conn = upstream_connections[worker_id]
+            if conn.get("pool_writer") and not conn["pool_writer"].is_closing():
+                return conn
+            upstream_connections.pop(worker_id, None)
+
+        print(f"[proxy] Opening dedicated pool connection for worker '{worker_id}' -> {POOL_HOST}:{POOL_PORT}")
+        try:
+            pool_reader, pool_writer = await asyncio.open_connection(POOL_HOST, POOL_PORT, limit=1024*1024)
+            conn = {
+                "pool_reader": pool_reader,
+                "pool_writer": pool_writer,
+                "task": None,
+                "sse_queues": set(),
+                "pending_submits": {},
+                "latest_job": None,
+                "current_diff": 1.0,
+                "last_active": time.time()
+            }
+            upstream_connections[worker_id] = conn
+            conn["task"] = asyncio.create_task(upstream_worker_loop(worker_id, pool_reader, pool_writer))
+
+            # Wait up to 3 seconds for initial mining.notify job from pool
+            for _ in range(30):
+                if conn["latest_job"]:
+                    break
+                await asyncio.sleep(0.1)
+            return conn
+        except Exception as e:
+            print(f"[proxy] Failed to connect upstream for '{worker_id}': {e}")
+            return None
+
+async def reaper_loop():
+    while True:
+        try:
+            await asyncio.sleep(30)
+            now = time.time()
+            dead_workers = []
+            for wid, conn in list(upstream_connections.items()):
+                # If no SSE listener queues and inactive for > 120s, prune socket
+                if len(conn.get("sse_queues", set())) == 0 and (now - conn.get("last_active", now)) > 120:
+                    dead_workers.append(wid)
+
+            for wid in dead_workers:
+                conn = upstream_connections.pop(wid, None)
+                if conn:
+                    print(f"[reaper] Pruning idle upstream connection for {wid}")
+                    if conn.get("pool_writer"):
+                        try:
+                            conn["pool_writer"].close()
+                        except Exception:
+                            pass
+                    if conn.get("task"):
+                        conn["task"].cancel()
+        except Exception as e:
+            print(f"[reaper] Error: {e}")
 
 async def handle_http(reader, writer):
     global next_msg_id
@@ -406,6 +497,11 @@ async def handle_http(reader, writer):
                 k, v = hstr.split(':', 1)
                 headers[k.strip().lower()] = v.strip()
 
+        # Extract real client IP from Cloud / Proxy headers if available
+        forwarded_for = headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+
         parsed_url = urlparse(path)
         qparams = parse_qs(parsed_url.query)
 
@@ -432,7 +528,7 @@ async def handle_http(reader, writer):
 
         elif parsed_url.path == "/v1/chat/completions" and method == "POST":
             clen = int(headers.get("content-length", 0))
-            req_body = await reader.read(clen) if clen > 0 else b""
+            req_body = await reader.readexactly(clen) if clen > 0 else b""
             worker_id = headers.get("x-worker-id", headers.get("x-worker-name", f"vps-{client_ip.replace('.', '-')}"))
             update_worker(worker_id, client_ip)
 
@@ -446,8 +542,9 @@ async def handle_http(reader, writer):
             writer.write(
                 b"HTTP/1.1 200 OK\r\n"
                 b"Content-Type: text/event-stream\r\n"
-                b"Cache-Control: no-cache\r\n"
+                b"Cache-Control: no-cache, no-transform\r\n"
                 b"Connection: keep-alive\r\n"
+                b"X-Accel-Buffering: no\r\n"
                 b"Access-Control-Allow-Origin: *\r\n\r\n"
             )
             await writer.drain()
@@ -463,12 +560,14 @@ async def handle_http(reader, writer):
             try:
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(q.get(), timeout=15)
+                        chunk = await asyncio.wait_for(q.get(), timeout=10)
                         if chunk is None:
                             break
+                        conn["last_active"] = time.time()
                         writer.write(f"data: {chunk}\n\n".encode('utf-8'))
                         await writer.drain()
                     except asyncio.TimeoutError:
+                        conn["last_active"] = time.time()
                         update_worker(worker_id, client_ip)
                         ping_chunk = json.dumps({
                             "id": f"chatcmpl-ping-{int(time.time()*1000)}",
@@ -482,6 +581,7 @@ async def handle_http(reader, writer):
             except Exception:
                 pass
             finally:
+                conn["last_active"] = time.time()
                 conn["sse_queues"].discard(q)
                 writer.close()
 
@@ -507,11 +607,29 @@ async def handle_http(reader, writer):
             if not conn:
                 conn = await get_or_create_upstream(worker_id)
 
+            if conn:
+                conn["last_active"] = time.time()
+
             if conn and job_id and plain_proof:
                 mid = next_msg_id
                 next_msg_id += 1
                 fut = asyncio.get_event_loop().create_future()
                 conn["pending_submits"][mid] = (fut, hs, job_id)
+
+                # Compress plain_proof if pool negotiated v2 Gzip protocol
+                final_proof = plain_proof
+                if conn.get("gzip_v2"):
+                    try:
+                        import zlib, base64
+                        raw_bytes = base64.b64decode(plain_proof)
+                        # Check if not already gzip compressed (gzip magic: 0x1f, 0x8b)
+                        if not (len(raw_bytes) >= 2 and raw_bytes[0] == 0x1F and raw_bytes[1] == 0x8B):
+                            gz_bytes = zlib.compress(raw_bytes, level=9, wbits=31)
+                            final_proof = base64.b64encode(gz_bytes).decode('ascii')
+                            print(f"[gzip:v2] Compressed share {job_id}: {len(plain_proof)} -> {len(final_proof)} chars")
+                    except Exception as gz_err:
+                        print(f"[gzip:v2] Compression warning: {gz_err}")
+                        final_proof = plain_proof
 
                 submit_msg = json.dumps({
                     "jsonrpc": "2.0",
@@ -519,7 +637,7 @@ async def handle_http(reader, writer):
                     "method": "mining.submit",
                     "params": {
                         "job_id": job_id,
-                        "plain_proof": plain_proof,
+                        "plain_proof": final_proof,
                         "hs": hs
                     }
                 }) + "\n"
@@ -613,6 +731,10 @@ async def main():
     print(f"Upstream Pool: {POOL_HOST}:{POOL_PORT}")
     print(f"Wallet: {DEFAULT_WALLET}")
     print(f"Listening on 0.0.0.0:{PORT}")
+
+    # Launch background reaper task to clean idle upstream pool connections
+    asyncio.create_task(reaper_loop())
+
     server = await asyncio.start_server(handle_http, '0.0.0.0', PORT)
     async with server:
         await server.serve_forever()
