@@ -1,29 +1,29 @@
 # Sử dụng Node 20 có đầy đủ Debian libs
-FROM node:20
+# FROM node:20
 
-# Cài công cụ build & Boost
-# RUN apt-get update && apt-get install -y \
-#     build-essential \
-#     python3 \
-#     cmake \
-#     git \
-#     pkg-config \
-#     && rm -rf /var/lib/apt/lists/*
+# # Cài công cụ build & Boost
+# # RUN apt-get update && apt-get install -y \
+# #     build-essential \
+# #     python3 \
+# #     cmake \
+# #     git \
+# #     pkg-config \
+# #     && rm -rf /var/lib/apt/lists/*
 
-# Thư mục làm việc
-WORKDIR /usr/src/app
+# # Thư mục làm việc
+# WORKDIR /usr/src/app
 
-# Sao chép file package
-COPY . .
+# # Sao chép file package
+# COPY . .
 
-# Cài dependencies (bao gồm cmake-js, node-gyp nếu có)
-RUN npm install
+# # Cài dependencies (bao gồm cmake-js, node-gyp nếu có)
+# RUN npm install
 
-# Mở port proxy
-EXPOSE 8000
+# # Mở port proxy
+# EXPOSE 8000
 
-# Chạy proxy bằng npm start
-CMD ["npm", "start"]
+# # Chạy proxy bằng npm start
+# CMD ["npm", "start"]
 
 # Multi-stage build for optimal size and security
 
@@ -74,3 +74,19 @@ CMD ["npm", "start"]
 
 # # Set entrypoint
 # ENTRYPOINT ["/app"]
+
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies first (better layer caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app code
+COPY . .
+
+EXPOSE 8000
+
+CMD ["python", "app.py"]
