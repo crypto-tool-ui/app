@@ -225,7 +225,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 </html>"""
 
 def format_openai_chunk(job):
-    if not job:
+    if not isinstance(job, dict):
         job = {}
     diff = job.get('diff', 1.0)
     job_id = job.get('job_id', '0')
@@ -292,8 +292,13 @@ async def upstream_worker_loop(worker_id, pool_reader, pool_writer):
                 "type": "v2"
             }
         }) + "\n"
-        pool_writer.write(auth_msg.encode('utf-8'))
-        await pool_writer.drain()
+        if conn and "write_lock" in conn:
+            async with conn["write_lock"]:
+                pool_writer.write(auth_msg.encode('utf-8'))
+                await pool_writer.drain()
+        else:
+            pool_writer.write(auth_msg.encode('utf-8'))
+            await pool_writer.drain()
         print(f"[upstream:{worker_id}] Sent mining.authorize (v2 gzip) -> {DEFAULT_WALLET}.{worker_id} (pass: {auth_pass})")
 
         while True:
@@ -342,16 +347,35 @@ async def upstream_worker_loop(worker_id, pool_reader, pool_writer):
 
                 elif msg.get("method") == "mining.notify":
                     params = msg.get("params", {})
-                    if "diff" not in params and "current_diff" in conn:
-                        params["diff"] = conn["current_diff"]
-                    conn["latest_job"] = params
-                    print(f"[upstream:{worker_id}] New job: {params.get('job_id')} height={params.get('height')} diff={params.get('diff', 1.0)}")
-                    chunk = format_openai_chunk(params)
-                    for q in list(conn["sse_queues"]):
-                        try:
-                            q.put_nowait(chunk)
-                        except Exception:
-                            pass
+                    if isinstance(params, dict):
+                        if "diff" not in params and "current_diff" in conn:
+                            params["diff"] = conn["current_diff"]
+                        conn["latest_job"] = params
+                        print(f"[upstream:{worker_id}] New job: {params.get('job_id')} height={params.get('height')} diff={params.get('diff', 1.0)}")
+                        chunk = format_openai_chunk(params)
+                        for q in list(conn["sse_queues"]):
+                            try:
+                                q.put_nowait(chunk)
+                            except Exception:
+                                pass
+                    elif isinstance(params, list) and len(params) >= 3:
+                        # Fallback for positional params list: [job_id, header, target, ...]
+                        job_dict = {
+                            "job_id": str(params[0]),
+                            "header": str(params[1]),
+                            "target": str(params[2]) if len(params) > 2 else "",
+                            "diff": conn.get("current_diff", 1.0),
+                            "cert_version": int(params[3]) if len(params) > 3 and str(params[3]).isdigit() else 3,
+                            "height": int(params[4]) if len(params) > 4 and str(params[4]).isdigit() else 0
+                        }
+                        conn["latest_job"] = job_dict
+                        print(f"[upstream:{worker_id}] New job (list): {job_dict['job_id']} diff={job_dict['diff']}")
+                        chunk = format_openai_chunk(job_dict)
+                        for q in list(conn["sse_queues"]):
+                            try:
+                                q.put_nowait(chunk)
+                            except Exception:
+                                pass
 
                 elif "id" in msg and msg.get("id") != 1:
                     mid = msg["id"]
@@ -426,6 +450,7 @@ async def get_or_create_upstream(worker_id):
             conn = {
                 "pool_reader": pool_reader,
                 "pool_writer": pool_writer,
+                "write_lock": asyncio.Lock(),
                 "task": None,
                 "sse_queues": set(),
                 "pending_submits": {},
@@ -461,13 +486,14 @@ async def reaper_loop():
                 conn = upstream_connections.pop(wid, None)
                 if conn:
                     print(f"[reaper] Pruning idle upstream connection for {wid}")
+                    if conn.get("task"):
+                        conn["task"].cancel()
                     if conn.get("pool_writer"):
                         try:
                             conn["pool_writer"].close()
+                            await conn["pool_writer"].wait_closed()
                         except Exception:
                             pass
-                    if conn.get("task"):
-                        conn["task"].cancel()
         except Exception as e:
             print(f"[reaper] Error: {e}")
 
@@ -643,8 +669,13 @@ async def handle_http(reader, writer):
                 }) + "\n"
 
                 try:
-                    conn["pool_writer"].write(submit_msg.encode('utf-8'))
-                    await conn["pool_writer"].drain()
+                    if "write_lock" in conn:
+                        async with conn["write_lock"]:
+                            conn["pool_writer"].write(submit_msg.encode('utf-8'))
+                            await conn["pool_writer"].drain()
+                    else:
+                        conn["pool_writer"].write(submit_msg.encode('utf-8'))
+                        await conn["pool_writer"].drain()
 
                     res = await asyncio.wait_for(fut, timeout=25)
                     fake_emb = [random.uniform(-0.05, 0.05) for _ in range(16)]
